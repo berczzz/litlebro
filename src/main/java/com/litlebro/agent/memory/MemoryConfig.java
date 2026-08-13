@@ -4,9 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
 import com.litlebro.agent.memory.external.RedisChatMemory;
+import com.litlebro.agent.rag.DocumentParseCache;
 import com.litlebro.agent.rag.DocumentSplitterFactory;
 import com.litlebro.agent.rag.SemanticTextSplitter;
+import com.litlebro.agent.rag.external.RedisDocumentParseCache;
+import com.litlebro.agent.rag.local.LocalDocumentParseCache;
 import com.litlebro.agent.session.SessionManager;
+import com.litlebro.agent.session.external.RedisSessionManager;
+import com.litlebro.agent.session.local.LocalSessionManager;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.param.ConnectParam;
 import io.milvus.param.IndexType;
@@ -20,7 +25,6 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.milvus.MilvusVectorStore;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -36,8 +40,8 @@ import org.springframework.scheduling.annotation.EnableAsync;
  *
  * <p>短期记忆（STM）与长期记忆（LTM）各自独立配置，互不影响：
  * <ul>
- *   <li>{@code app.memory.stm.type} — 短期记忆存储，可选 {@code inmemory}（默认）/ {@code redis}</li>
- *   <li>{@code app.memory.ltm.type} — 长期记忆存储，可选 {@code inmemory}（默认）/ {@code milvus}</li>
+ *   <li>{@code app.memory.stm.type} — 短期记忆存储，可选 {@code local}（默认）/ {@code redis}</li>
+ *   <li>{@code app.memory.ltm.type} — 长期记忆存储，可选 {@code local}（默认）/ {@code milvus}</li>
  * </ul>
  */
 @Configuration
@@ -47,7 +51,7 @@ public class MemoryConfig {
     // ==================== 短期记忆（STM）====================
 
     @Bean
-    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "inmemory", matchIfMissing = true)
+    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "local", matchIfMissing = true)
     public ChatMemory inMemoryChatMemory() {
         return new InMemoryChatMemory();
     }
@@ -75,7 +79,7 @@ public class MemoryConfig {
     // ==================== 长期记忆（LTM）====================
 
     @Bean
-    @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "inmemory", matchIfMissing = true)
+    @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "local", matchIfMissing = true)
     public VectorStore simpleVectorStore(EmbeddingModel embeddingModel) {
         return SimpleVectorStore.builder(embeddingModel).build();
     }
@@ -117,14 +121,53 @@ public class MemoryConfig {
 
     // ==================== 会话状态 ====================
 
+    @Bean
+    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "local", matchIfMissing = true)
+    public SessionManager localSessionManager() {
+        return new LocalSessionManager();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "redis")
+    public SessionManager redisSessionManager(
+            @Qualifier("stmRedisTemplate") RedisTemplate<String, Object> stmRedisTemplate,
+            ObjectMapper objectMapper) {
+        return new RedisSessionManager(stmRedisTemplate, objectMapper);
+    }
+
+    // ==================== 文档解析缓存 ====================
+
     /**
-     * 会话状态存储跟随短期记忆：STM 用 Redis 时也存 Redis（30min TTL），否则回退内存。
+     * 文档解析缓存存储由 {@code app.rag.cache.type} 显式决定：
+     * {@code redis} 时写入 Redis（TTL {@code app.rag.cache.parse-ttl-hours}），
+     * {@code local}（默认）时写入本地内存。与短期记忆配置互不影响。
      */
     @Bean
-    public SessionManager sessionManager(
-            @Autowired(required = false) @Qualifier("stmRedisTemplate") RedisTemplate<String, Object> stmRedisTemplate,
-            ObjectMapper objectMapper) {
-        return new SessionManager(stmRedisTemplate, objectMapper);
+    @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "redis")
+    public RedisTemplate<String, Object> ragCacheRedisTemplate(RedisConnectionFactory connectionFactory) {
+        RedisTemplate<String, Object> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(new StringRedisSerializer());
+        template.setHashKeySerializer(new StringRedisSerializer());
+        // 值统一存 JSON 字符串：解析文本直接以字符串存储
+        template.setValueSerializer(new StringRedisSerializer());
+        template.setHashValueSerializer(new StringRedisSerializer());
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "local", matchIfMissing = true)
+    public DocumentParseCache localDocumentParseCache() {
+        return new LocalDocumentParseCache();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "redis")
+    public DocumentParseCache redisDocumentParseCache(
+            RedisTemplate<String, Object> ragCacheRedisTemplate,
+            @Value("${app.rag.cache.parse-ttl-hours:24}") long ttlHours) {
+        return new RedisDocumentParseCache(ragCacheRedisTemplate, ttlHours);
     }
 
     // ==================== 业务装配 ====================

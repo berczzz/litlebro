@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * 全局异常处理器，拦截所有 Controller 层抛出的异常，
@@ -27,6 +28,14 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /** 单文件上传大小上限（与 application.yml 的 spring.servlet.multipart.max-file-size 保持一致） */
+    private final String maxFileSize;
+
+    public GlobalExceptionHandler(@org.springframework.beans.factory.annotation.Value(
+            "${spring.servlet.multipart.max-file-size:50MB}") String maxFileSize) {
+        this.maxFileSize = maxFileSize;
+    }
 
     /**
      * 处理业务逻辑中主动抛出的参数校验异常。
@@ -59,6 +68,20 @@ public class GlobalExceptionHandler {
         log.warn("参数校验失败: {}", message);
         return ResponseEntity.badRequest()
                 .body(ErrorResponse.of(400, message));
+    }
+
+    /**
+     * 处理文件上传超限异常（MaxUploadSizeExceededException）。
+     * 返回 400 提示用户文件过大，而非默认的 500 内部错误。
+     *
+     * @param ex 文件上传大小超限异常
+     * @return 400 错误响应，含文件大小限制说明
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ErrorResponse> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        log.warn("文件上传超限: {}", ex.getMessage());
+        return ResponseEntity.badRequest()
+                .body(ErrorResponse.of(400, "文件过大，单文件最大 " + maxFileSize + "，请压缩后重试"));
     }
 
     /**

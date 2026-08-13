@@ -2,6 +2,14 @@ spring:
   application:
     name: litlebro
 
+  servlet:
+    multipart:
+      # 单文件大小上限（RAG 文档上传）
+      max-file-size: ${APP_MAX_FILE_SIZE:50MB}
+      # 单次请求总大小上限
+      max-request-size: ${APP_MAX_REQUEST_SIZE:60MB}
+      file-size-threshold: 2MB
+
   autoconfigure:
     exclude:
       - org.springframework.ai.autoconfigure.vectorstore.milvus.MilvusVectorStoreAutoConfiguration
@@ -52,12 +60,12 @@ spring:
 
 app:
   memory:
-    # 短期记忆（STM）存储: inmemory(默认) | redis
+    # 短期记忆（STM）存储: local(默认) | redis
     stm:
-      type: ${APP_MEMORY_STM_TYPE:inmemory}
-    # 长期记忆（LTM）存储: inmemory(默认) | milvus
+      type: ${APP_MEMORY_STM_TYPE:local}
+    # 长期记忆（LTM）存储: local(默认) | milvus
     ltm:
-      type: ${APP_MEMORY_LTM_TYPE:inmemory}
+      type: ${APP_MEMORY_LTM_TYPE:local}
     # 上下文压缩配置
     context:
       # 模型上下文窗口大小（token），超阈值的会话历史会被压缩
@@ -71,6 +79,26 @@ app:
   rag:
     # 文档知识库检索工具二次过滤阈值：低于该分数的片段丢弃
     min-score: ${APP_RAG_MIN_SCORE:0.35}
+    # 单份文档解析文本长度上限（字符），超限截断，防止大文件耗尽内存
+    max-text-length: ${APP_RAG_MAX_TEXT_LENGTH:3000000}
+    # 文档解析缓存：文件内容哈希为 key，重复上传时跳过解析（图片型文档避免重复调用视觉模型）
+    cache:
+      # 存储后端: local(默认, 本地内存) | redis（写入 Redis，带 TTL，重启不丢）
+      type: ${APP_RAG_CACHE_TYPE:local}
+      # 缓存 TTL（小时），过期后重新解析
+      parse-ttl-hours: ${APP_RAG_CACHE_PARSE_TTL_HOURS:24}
+    # 图片内容视觉描述配置（图片型 PDF 页面、直接上传的图片文件）
+    vision:
+      # 是否启用视觉描述：启用后图片内容用 dashscope 多模态模型描述为文字后入库
+      enabled: ${APP_RAG_VISION_ENABLED:true}
+      # 视觉描述模型（DashScope qwen-vl 系列）
+      model: ${APP_RAG_VISION_MODEL:qwen3.7-flash-2026-07-15}
+      # DashScope API Key
+      api-key: ${APP_RAG_VISION_API_KEY:}
+      # DashScope 服务地址（默认 https://dashscope.aliyuncs.com/api/v1）
+      base-url: ${APP_RAG_VISION_BASE_URL:}
+      # 渲染 PDF 页面的 DPI，越高描述越准但耗时越长
+      pdf-dpi: ${APP_RAG_VISION_PDF_DPI:150}
     # 文档切块策略: semantic(默认) | fixed
     splitter:
       strategy: ${APP_RAG_SPLITTER:semantic}
