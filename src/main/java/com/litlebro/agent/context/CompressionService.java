@@ -65,9 +65,21 @@ public class CompressionService {
                 .chatResponse();
         log.debug("历史压缩完成，原文 {} 条消息，前次摘要 {} 字符",
                 historyMessages.size(), previousSummary != null ? previousSummary.length() : 0);
+
+        if (summaryResp == null || summaryResp.getResult() == null
+                || summaryResp.getResult().getOutput() == null
+                || summaryResp.getResult().getOutput().getText() == null) {
+            log.warn("历史压缩返回为空，本次压缩跳过");
+            return map;
+        }
         String summary = summaryResp.getResult().getOutput().getText();
         map.put("summary", summary);
-        map.put("cost", summaryResp.getMetadata().getUsage().getCompletionTokens());
+        int cost = 0;
+        if (summaryResp.getMetadata() != null && summaryResp.getMetadata().getUsage() != null
+                && summaryResp.getMetadata().getUsage().getCompletionTokens() != null) {
+            cost = summaryResp.getMetadata().getUsage().getCompletionTokens();
+        }
+        map.put("cost", cost);
         return map;
     }
 }

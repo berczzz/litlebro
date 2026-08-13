@@ -5,10 +5,8 @@ import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.memory.model.AgentMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.document.Document;
 import org.springframework.util.CollectionUtils;
 
@@ -33,8 +31,6 @@ public class LongTermMemoryService {
 
     private static final Logger log = LoggerFactory.getLogger(LongTermMemoryService.class);
 
-    private static final String SUMMARY_PREFIX = "之前的对话摘要:\n";
-
     private final VectorMemoryStore vectorMemoryStore;
 
     public LongTermMemoryService(VectorMemoryStore vectorMemoryStore) {
@@ -46,12 +42,12 @@ public class LongTermMemoryService {
             return;
         }
         HashMap<String, Object> map = new HashMap<>();
-        map.put("cost", costTokens);
+        map.put(Constant.SUMMARY_COST, costTokens);
         AgentMessage am = new AgentMessage(
                 UUID.randomUUID().toString().replace("-", ""),
                 sessionId,
                 Constant.CATEGORY_SUMMARY,
-                "system",
+                ChatContentRole.SYSTEM_ROLE,
                 ChatContentRole.SYSTEM_ROLE,
                 summary,
                 map,
@@ -69,7 +65,7 @@ public class LongTermMemoryService {
             return;
         }
         HashMap<String, Object> map = new HashMap<>();
-        map.put("cost", costTokens);
+        map.put(Constant.SUMMARY_COST, costTokens);
         AgentMessage am = new AgentMessage(
                 UUID.randomUUID().toString().replace("-", ""),
                 sessionId,
@@ -116,20 +112,23 @@ public class LongTermMemoryService {
         List<Document> docs = vectorMemoryStore.searchByCategoryAfter(sessionId, Constant.CATEGORY_CHAT, afterTimestamp, limit);
         List<AgentMessage> result = new ArrayList<>();
         for (Document doc : docs) {
-            result.add(toAgentMessage(doc));
+            AgentMessage am = vectorMemoryStore.toAgentMessage(doc);
+            if (am != null) {
+                result.add(am);
+            }
         }
         return result;
     }
 
     public Map<String, List<Map<String, String>>> getAllFacts(String sessionId) {
-        List<Document> docs = vectorMemoryStore.searchByCategoryNoThreshold(sessionId, null, 50);
+        List<Document> docs = vectorMemoryStore.searchByCategoryNoThreshold(sessionId, null, Constant.MAX_DEBUG_FACTS);
         Map<String, List<Map<String, String>>> allFacts = new LinkedHashMap<>();
         for (Document doc : docs) {
-            String category = String.valueOf(doc.getMetadata().getOrDefault("category", Constant.CATEGORY_OTHER));
+            String category = String.valueOf(doc.getMetadata().getOrDefault(Constant.MD_CATEGORY, Constant.CATEGORY_OTHER));
             allFacts.computeIfAbsent(category, k -> new ArrayList<>())
                     .add(Map.of(
                             "fact", doc.getText(),
-                            "timestamp", String.valueOf(doc.getMetadata().getOrDefault("createdAt", ""))
+                            "timestamp", String.valueOf(doc.getMetadata().getOrDefault(Constant.MD_CREATED_AT, ""))
                     ));
         }
         return allFacts;
@@ -139,39 +138,6 @@ public class LongTermMemoryService {
         vectorMemoryStore.deleteSessionMemories(sessionId);
     }
 
-    private AgentMessage toAgentMessage(Document doc) {
-        if (doc == null) {
-            return null;
-        }
-        Map<String, Object> metadata = doc.getMetadata();
-        return new AgentMessage(
-                String.valueOf(metadata.getOrDefault("id", doc.getId())),
-                String.valueOf(metadata.getOrDefault("sessionId", "")),
-                String.valueOf(metadata.getOrDefault("category", Constant.CATEGORY_OTHER)),
-                String.valueOf(metadata.getOrDefault("messageType", "")),
-                String.valueOf(metadata.getOrDefault("role", "")),
-                doc.getText(),
-                new LinkedHashMap<>(metadata),
-                List.of(),
-                List.of(),
-                List.of(),
-                toLong(metadata.get("createdAt"))
-        );
-    }
-
-    private long toLong(Object value) {
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        if (value != null) {
-            try {
-                return Long.parseLong(value.toString());
-            } catch (Exception ignored) {
-            }
-        }
-        return 0;
-    }
-
     public List<Message> getStmMessage(String sessionId) {
         List<Message> rebuilt = new ArrayList<>();
 
@@ -179,44 +145,20 @@ public class LongTermMemoryService {
         long compactPoint = -1;
         Document summaryDoc = getLatestSummaryDoc(sessionId);
         if (summaryDoc != null) {
-            String summaryText = summaryDoc.getText();
+            AgentMessage summary = vectorMemoryStore.toAgentMessage(summaryDoc);
+            String summaryText = summary != null ? summary.text() : summaryDoc.getText();
             if (summaryText != null && !summaryText.isBlank()) {
-                rebuilt.add(new SystemMessage(SUMMARY_PREFIX + summaryText));
+                rebuilt.add(new SystemMessage(Constant.SUMMARY_PREFIX + summaryText));
             }
-            compactPoint = createdAtMillis(summaryDoc);
+            compactPoint = summary != null ? summary.createdAt() : 0;
         }
 
         // 只回注压缩点之后的消息（向量库查询层按 createdAt > compactPoint 过滤），
-        List<AgentMessage> chatMessages = getChatMessages(sessionId, compactPoint, 500);
+        List<AgentMessage> chatMessages = getChatMessages(sessionId, compactPoint, Constant.MAX_CONTEXT_RESTORE_MESSAGES);
         if (CollectionUtils.isEmpty(chatMessages)) {
             return Collections.emptyList();
         }
         chatMessages.sort(Comparator.comparingLong(AgentMessage::createdAt));
-        for (AgentMessage am : chatMessages) {
-            String text = am.text();
-            if (text == null || text.isBlank()) {
-                continue;
-            }
-            if (ChatContentRole.USER_ROLE.equals(am.role())) {
-                rebuilt.add(new UserMessage(text));
-            } else if (ChatContentRole.ASSISTANT_ROLE.equals(am.role())) {
-                rebuilt.add(new AssistantMessage(text));
-            }
-        }
-        return rebuilt;
-    }
-
-    private long createdAtMillis(Document doc) {
-        Object value = doc.getMetadata().get("createdAt");
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        if (value != null) {
-            try {
-                return Long.parseLong(value.toString());
-            } catch (Exception ignored) {
-            }
-        }
-        return 0;
+        return MessageCodec.toMessages(chatMessages);
     }
 }

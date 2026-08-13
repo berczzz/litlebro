@@ -1,5 +1,6 @@
 package com.litlebro.agent.context;
 
+import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
@@ -9,6 +10,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,7 +25,6 @@ public class ContextManager {
 
     private static final Logger log = LoggerFactory.getLogger(ContextManager.class);
 
-    private static final int DEFAULT_MAX_CONTEXT_TOKENS = 128000;
     private static final double OVERFLOW_THRESHOLD = 0.75;
     // 最新消息保留条数
     private static final int RECENT_MESSAGES_KEEP = 6;
@@ -32,15 +33,19 @@ public class ContextManager {
     private final CompressionService compressionService;
     private final LongTermMemoryService longTermMemoryService;
     private final SessionManager sessionManager;
+    /** 模型上下文窗口大小（token），用于判断是否溢出 */
+    private final int maxContextTokens;
 
     public ContextManager(ChatMemory chatMemory,
                           CompressionService compressionService,
                           LongTermMemoryService longTermMemoryService,
-                          SessionManager sessionManager) {
+                          SessionManager sessionManager,
+                          @Value("${app.memory.context.max-tokens:128000}") int maxContextTokens) {
         this.chatMemory = chatMemory;
         this.compressionService = compressionService;
         this.longTermMemoryService = longTermMemoryService;
         this.sessionManager = sessionManager;
+        this.maxContextTokens = maxContextTokens;
     }
 
     public void compactIfNeeded(String sessionId) {
@@ -49,7 +54,7 @@ public class ContextManager {
             return;
         }
         int curPromptTokens = session.curPromptTokens();
-        if ((double) curPromptTokens / DEFAULT_MAX_CONTEXT_TOKENS <= OVERFLOW_THRESHOLD) {
+        if ((double) curPromptTokens / maxContextTokens <= OVERFLOW_THRESHOLD) {
             return;
         }
         doCompact(sessionId);
@@ -79,18 +84,20 @@ public class ContextManager {
         }
 
         Map<String, Object> result = compressionService.summarizeHistory(oldMessages, previousSummary);
-        String summary = result.getOrDefault("summary", "").toString();
-        if (summary == null || summary.isBlank()) {
+        Object summaryObj = result.get("summary");
+        if (summaryObj == null || summaryObj.toString().isBlank()) {
             return;
         }
-        int cost = Integer.parseInt(result.getOrDefault("cost", 0).toString());
+        String summary = summaryObj.toString();
+        Object costObj = result.getOrDefault("cost", 0);
+        int cost = costObj instanceof Number n ? n.intValue() : 0;
 
         longTermMemoryService.saveSummary(sessionId, summary, cost);
         sessionManager.resetCurTokens(sessionId);
 
         // 重建上下文：摘要 + 最近 6 条原文
         List<Message> rebuilt = new ArrayList<>();
-        rebuilt.add(new SystemMessage("之前的对话摘要:\n" + summary));
+        rebuilt.add(new SystemMessage(Constant.SUMMARY_PREFIX + summary));
         rebuilt.addAll(recentMessages);
 
         chatMemory.clear(sessionId);
@@ -106,9 +113,8 @@ public class ContextManager {
         Message first = messages.get(0);
         if (first.getMessageType() == MessageType.SYSTEM) {
             String text = first.getText();
-            String prefix = "之前的对话摘要:\n";
-            if (text != null && text.startsWith(prefix)) {
-                return text.substring(prefix.length());
+            if (text != null && text.startsWith(Constant.SUMMARY_PREFIX)) {
+                return text.substring(Constant.SUMMARY_PREFIX.length());
             }
         }
         return null;

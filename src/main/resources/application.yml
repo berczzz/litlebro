@@ -8,17 +8,13 @@ spring:
 
   ai:
     openai:
-      api-key: sk-ws-H.RPIHMPE.f93W.MEYCIQCTW5vpo_hj6JBGLNAyp-PINTWunsm4lYRyxhMgEuIG-AIhAKRNR75uNoZTTMErck4iKqFXNZDUM4XmPmsEyEqGy9g3
-      # 注意: Spring AI 会自动拼接 /v1/{endpoint}，base-url 不要带尾部 /v1，否则会变成 /v1/v1/...
-      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      api-key: ${OPEN_AI_API_KEY:''}
+      base-url: ${OPEN_AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
       chat:
         options:
           model: qwen3.8-max
           temperature: 0.7
           max-tokens: 131072
-      # 注意: 默认的 text-embedding-ada-002 在阿里 MaaS/DashScope 网关不存在，
-      # 必须显式指定网关支持的 embedding 模型（这里用 text-embedding-v3，
-      # 若你的网关不支持请按模型列表换 text-embedding-v2 / text-embedding-v4 等）。
       embedding:
         options:
           model: text-embedding-v3
@@ -57,15 +53,15 @@ spring:
 app:
   memory:
     # 短期记忆（STM）存储: inmemory(默认) | redis
-    # inmemory — 使用进程内 InMemoryChatMemory
-    # redis    — 使用 RedisChatMemory（30 分钟 TTL）
     stm:
       type: ${APP_MEMORY_STM_TYPE:redis}
     # 长期记忆（LTM）存储: inmemory(默认) | milvus
-    # inmemory — 使用 SimpleVectorStore（进程内）
-    # milvus   — 使用 MilvusVectorStore
     ltm:
       type: ${APP_MEMORY_LTM_TYPE:inmemory}
+    # 上下文压缩配置
+    context:
+      # 模型上下文窗口大小（token），超阈值的会话历史会被压缩
+      max-tokens: ${APP_MEMORY_CONTEXT_MAX_TOKENS:128000}
 
 server:
   port: 8080

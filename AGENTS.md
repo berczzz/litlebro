@@ -114,6 +114,7 @@ src/main/java/com/litlebro/agent/
 | Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
 | 短期记忆类型 | `APP_MEMORY_STM_TYPE`（`app.memory.stm.type`） | `inmemory` |
 | 长期记忆类型 | `APP_MEMORY_LTM_TYPE`（`app.memory.ltm.type`） | `inmemory` |
+| 上下文窗口大小 | `APP_MEMORY_CONTEXT_MAX_TOKENS`（`app.memory.context.max-tokens`） | `128000` |
 
 ## 开发约定
 

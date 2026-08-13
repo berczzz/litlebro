@@ -3,7 +3,6 @@ package com.litlebro.agent.memory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
-import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.memory.external.RedisChatMemory;
 import com.litlebro.agent.session.SessionManager;
 import io.milvus.client.MilvusServiceClient;
@@ -141,14 +140,6 @@ public class MemoryConfig {
     @Bean
     public LongTermMemoryService longTermMemoryService(VectorMemoryStore vectorMemoryStore) {
         return new LongTermMemoryService(vectorMemoryStore);
-    }
-
-    @Bean
-    public ContextManager contextManager(ChatMemory chatMemory,
-                                          CompressionService compressionService,
-                                          LongTermMemoryService longTermMemoryService,
-                                          SessionManager sessionManager) {
-        return new ContextManager(chatMemory, compressionService, longTermMemoryService, sessionManager);
     }
 
     @Bean

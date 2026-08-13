@@ -29,6 +29,9 @@ public class VectorMemoryStore implements MemoryStore {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /** 语义检索相似度阈值，低于该值的记录视为不相关 */
+    private static final double SIMILARITY_THRESHOLD = 0.65;
+
     private final VectorStore vectorStore;
 
     public VectorMemoryStore(VectorStore vectorStore) {
@@ -39,26 +42,26 @@ public class VectorMemoryStore implements MemoryStore {
     public void save(AgentMessage agentMessage) {
         try {
             Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("id", agentMessage.id());
-            metadata.put("sessionId", agentMessage.sessionId());
-            metadata.put("category", agentMessage.category());
-            metadata.put("type", Constant.MEMORY_TYPE);
-            metadata.put("messageType", agentMessage.messageType());
-            metadata.put("role", agentMessage.role());
+            metadata.put(Constant.MD_ID, agentMessage.id());
+            metadata.put(Constant.MD_SESSION_ID, agentMessage.sessionId());
+            metadata.put(Constant.MD_CATEGORY, agentMessage.category());
+            metadata.put(Constant.MD_TYPE, Constant.MEMORY_TYPE);
+            metadata.put(Constant.MD_MESSAGE_TYPE, agentMessage.messageType());
+            metadata.put(Constant.MD_ROLE, agentMessage.role());
             if (agentMessage.metadata() != null) {
                 metadata.putAll(agentMessage.metadata());
             }
             long now = agentMessage.createdAt() > 0 ? agentMessage.createdAt() : System.currentTimeMillis();
-            metadata.putIfAbsent("createdAt", now);
-            metadata.putIfAbsent("updatedAt", now);
+            metadata.putIfAbsent(Constant.MD_CREATED_AT, now);
+            metadata.putIfAbsent(Constant.MD_UPDATED_AT, now);
             if (agentMessage.media() != null && !agentMessage.media().isEmpty()) {
-                metadata.put("media", OBJECT_MAPPER.writeValueAsString(agentMessage.media()));
+                metadata.put(Constant.MD_MEDIA, OBJECT_MAPPER.writeValueAsString(agentMessage.media()));
             }
             if (agentMessage.toolCalls() != null && !agentMessage.toolCalls().isEmpty()) {
-                metadata.put("toolCalls", OBJECT_MAPPER.writeValueAsString(agentMessage.toolCalls()));
+                metadata.put(Constant.MD_TOOL_CALLS, OBJECT_MAPPER.writeValueAsString(agentMessage.toolCalls()));
             }
             if (agentMessage.toolResponses() != null && !agentMessage.toolResponses().isEmpty()) {
-                metadata.put("toolResponses", OBJECT_MAPPER.writeValueAsString(agentMessage.toolResponses()));
+                metadata.put(Constant.MD_TOOL_RESPONSES, OBJECT_MAPPER.writeValueAsString(agentMessage.toolResponses()));
             }
 
             Document doc = Document.builder()
@@ -121,7 +124,7 @@ public class VectorMemoryStore implements MemoryStore {
                             .query(query)
                             .topK(topK)
                             .filterExpression("sessionId == '" + sessionId + "'")
-                            .similarityThreshold(0.65)
+                            .similarityThreshold(SIMILARITY_THRESHOLD)
                             .build()
             );
         } catch (Exception e) {
@@ -185,25 +188,30 @@ public class VectorMemoryStore implements MemoryStore {
         log.info("向量记忆已删除 sessionId={}", sessionId);
     }
 
-    private AgentMessage toAgentMessage(Document doc) {
+    /**
+     * 将向量库 Document 还原为统一记忆实体 AgentMessage。
+     * 供同包业务服务（LongTermMemoryService）复用，避免重复转换逻辑。
+     */
+    public AgentMessage toAgentMessage(Document doc) {
         if (Objects.isNull(doc)) {
             return null;
         }
         Map<String, Object> metadata = doc.getMetadata();
-        String id = String.valueOf(metadata.getOrDefault("id", doc.getId()));
-        String sessionId = String.valueOf(metadata.getOrDefault("sessionId", ""));
-        String category = String.valueOf(metadata.getOrDefault("category", Constant.CATEGORY_OTHER));
-        String messageType = String.valueOf(metadata.getOrDefault("messageType", ""));
-        String role = String.valueOf(metadata.getOrDefault("role", ""));
-        long createdAt = toLong(metadata.get("createdAt"));
+        String id = String.valueOf(metadata.getOrDefault(Constant.MD_ID, doc.getId()));
+        String sessionId = String.valueOf(metadata.getOrDefault(Constant.MD_SESSION_ID, ""));
+        String category = String.valueOf(metadata.getOrDefault(Constant.MD_CATEGORY, Constant.CATEGORY_OTHER));
+        String messageType = String.valueOf(metadata.getOrDefault(Constant.MD_MESSAGE_TYPE, ""));
+        String role = String.valueOf(metadata.getOrDefault(Constant.MD_ROLE, ""));
+        long createdAt = toLong(metadata.get(Constant.MD_CREATED_AT));
 
         Map<String, Object> extra = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : metadata.entrySet()) {
             String k = entry.getKey();
-            if ("id".equals(k) || "sessionId".equals(k) || "category".equals(k) || "type".equals(k)
-                    || "messageType".equals(k) || "role".equals(k) || "createdAt".equals(k)
-                    || "updatedAt".equals(k) || "media".equals(k) || "toolCalls".equals(k)
-                    || "toolResponses".equals(k)) {
+            if (Constant.MD_ID.equals(k) || Constant.MD_SESSION_ID.equals(k) || Constant.MD_CATEGORY.equals(k)
+                    || Constant.MD_TYPE.equals(k) || Constant.MD_MESSAGE_TYPE.equals(k)
+                    || Constant.MD_ROLE.equals(k) || Constant.MD_CREATED_AT.equals(k)
+                    || Constant.MD_UPDATED_AT.equals(k) || Constant.MD_MEDIA.equals(k)
+                    || Constant.MD_TOOL_CALLS.equals(k) || Constant.MD_TOOL_RESPONSES.equals(k)) {
                 continue;
             }
             extra.put(k, entry.getValue());
@@ -217,11 +225,11 @@ public class VectorMemoryStore implements MemoryStore {
                 role,
                 doc.getText(),
                 extra,
-                fromJson(metadata.get("media"), new TypeReference<>() {
+                fromJson(metadata.get(Constant.MD_MEDIA), new TypeReference<>() {
                 }),
-                fromJson(metadata.get("toolCalls"), new TypeReference<>() {
+                fromJson(metadata.get(Constant.MD_TOOL_CALLS), new TypeReference<>() {
                 }),
-                fromJson(metadata.get("toolResponses"), new TypeReference<>() {
+                fromJson(metadata.get(Constant.MD_TOOL_RESPONSES), new TypeReference<>() {
                 }),
                 createdAt
         );

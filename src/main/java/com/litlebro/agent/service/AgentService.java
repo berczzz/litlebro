@@ -1,6 +1,7 @@
 package com.litlebro.agent.service;
 
 import com.litlebro.agent.common.ChatContentRole;
+import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
@@ -82,7 +83,7 @@ public class AgentService {
                 content = "";
             }
 
-            if (response != null && response.getMetadata() != null) {
+            if (response != null && response.getMetadata() != null && response.getMetadata().getUsage() != null) {
                 Usage usage = response.getMetadata().getUsage();
                 String model = response.getMetadata().getModel();
                 int promptTokens = usage.getPromptTokens() != null ? usage.getPromptTokens() : 0;
@@ -138,7 +139,8 @@ public class AgentService {
         result.put("sessionId", sessionId);
         result.put("lastSummary", longTermMemoryService.getLatestSummary(sessionId));
         result.put("stmMessages", longTermMemoryService.getStmMessage(sessionId));
-        result.put("ltmMessages", longTermMemoryService.getChatMessages(sessionId, 0, Integer.MAX_VALUE));
+        // 调试接口：内存记忆较多时可截断，避免一次拉取全量
+        result.put("ltmMessages", longTermMemoryService.getChatMessages(sessionId, 0, Constant.MAX_DEBUG_MEMORY_MESSAGES));
         return result;
     }
 
