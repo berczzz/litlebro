@@ -217,11 +217,11 @@ public class VectorMemoryStore implements MemoryStore {
                 role,
                 doc.getText(),
                 extra,
-                fromJson(metadata.get("media"), new TypeReference<List<AgentMessage.MediaData>>() {
+                fromJson(metadata.get("media"), new TypeReference<>() {
                 }),
-                fromJson(metadata.get("toolCalls"), new TypeReference<List<AgentMessage.ToolCallData>>() {
+                fromJson(metadata.get("toolCalls"), new TypeReference<>() {
                 }),
-                fromJson(metadata.get("toolResponses"), new TypeReference<List<AgentMessage.ToolResponseData>>() {
+                fromJson(metadata.get("toolResponses"), new TypeReference<>() {
                 }),
                 createdAt
         );

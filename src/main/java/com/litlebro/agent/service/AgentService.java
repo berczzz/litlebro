@@ -3,7 +3,6 @@ package com.litlebro.agent.service;
 import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.memory.LongTermMemoryService;
-import com.litlebro.agent.memory.model.AgentMessage;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
 import com.litlebro.agent.tool.ToolRegistry;
@@ -14,16 +13,12 @@ import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
-import java.util.Comparator;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;

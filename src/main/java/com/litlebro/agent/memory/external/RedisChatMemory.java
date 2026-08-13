@@ -115,7 +115,7 @@ public class RedisChatMemory implements ChatMemory {
                 return new ArrayList<>();
             }
             String json = value instanceof String s ? s : value.toString();
-            List<AgentMessage> list = objectMapper.readValue(json, new TypeReference<List<AgentMessage>>() {
+            List<AgentMessage> list = objectMapper.readValue(json, new TypeReference<>() {
             });
             return list != null ? new ArrayList<>(list) : new ArrayList<>();
         } catch (Exception e) {
