@@ -1,9 +1,8 @@
+
+
 # litlebro — 小老弟
 
-一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 演示项目。
-通过 ChatClient 调用 OpenAI 兼容的 LLM，
-实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**
-和**可插拔的工具调用机制**。
+一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 演示项目。通过 ChatClient 调用 OpenAI 兼容的 LLM，实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**和**可插拔的工具调用机制**。
 
 ## 特性
 
@@ -42,8 +41,7 @@
 
 ### 2. 配置
 
-编辑 `src/main/resources/application.yml`，设置 LLM 相关参数
-（均支持环境变量覆盖）：
+编辑 `src/main/resources/application.yml`，设置 LLM 相关参数（均支持环境变量覆盖）：
 
 | 配置 | 环境变量 | 默认值 |
 | --- | --- | --- |
@@ -51,8 +49,7 @@
 | Base URL | `OPENAI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode` |
 | 模型 | — | `qwen3.8-max` |
 
-> 本项目默认对接阿里云 DashScope 的 OpenAI 兼容模式，也可改为任意兼容网关。
-> 注意：Spring AI 会自动拼接 `/v1/{endpoint}`，base-url **不要带尾部 `/v1`**。
+> 本项目默认对接阿里云 DashScope 的 OpenAI 兼容模式，也可改为任意兼容网关。注意：Spring AI 会自动拼接 `/v1/{endpoint}`，base-url **不要带尾部 `/v1`**。
 
 ### 3. 编译运行
 
@@ -163,16 +160,14 @@ app:
 | 向量库宽召回 | `VectorMemoryStore` | `similarity-threshold: 0.2` | 低门槛保证相关片段不丢 |
 | 工具层精过滤 | `SearchDocumentTool` / `SearchMemoryTool` | `min-score: 0.35` | 丢弃弱相关噪声，按分数降序返回 |
 
-两个阈值独立可调，分别通过 `app.memory.vector.similarity-threshold`、
-`app.rag.min-score`、`app.memory.min-score` 配置。
+两个阈值独立可调，分别通过 `app.memory.vector.similarity-threshold`、`app.rag.min-score`、`app.memory.min-score` 配置。
 
 ## RAG 文档知识库
 
 - 文档按 `category == document` **全局共享**（不绑定 sessionId），会话记忆按 sessionId 隔离
 - 上传：`POST /api/rag/document`（multipart `file`），支持 txt/md/json/pdf（PDFBox 解析）
 - 检索：由 LLM 按需调用两个工具——`search_document`（查文档库）、`search_memory`（查本会话记忆）
-- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800）
-  或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
+- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800）或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
 - 语义切块复用对话同一个 embedding 模型，保证切块/检索/对话向量空间一致
 
 ## 工具调用
@@ -192,52 +187,51 @@ app:
 ```
 src/main/java/com/litlebro/agent/
 ├── LitlebroApplication.java        # 主启动类
-├── controller/                    # REST 入口
-│   ├── AgentController.java       # 对话 / 工具 / 会话 / 记忆查看
-│   └── DocumentController.java    # 文档知识库上传 / 删除
-├── service/                       # 业务核心
-│   ├── AgentService.java          # 协调 LLM、工具、记忆、压缩
-│   └── DocumentService.java       # 文档入库：解析 → 切块 → 向量化
+├── controller/                     # REST 入口
+│   ├── AgentController.java        # 对话 / 工具 / 会话 / 记忆查看
+│   └── DocumentController.java     # 文档知识库上传 / 删除
+├── service/                        # 业务核心
+│   ├── AgentService.java           # 协调 LLM、工具、记忆、压缩
+│   └── DocumentService.java        # 文档入库：解析 → 切块 → 向量化
 ├── common/
-│   ├── Constant.java              # 常量统一管理
-│   └── SystemPrompt.java          # 系统提示词 + 压缩提示词
-├── context/                       # 上下文管理
-│   ├── ContextManager.java        # 后置溢出检查 + 压缩触发
-│   ├── CompressionService.java    # 对话历史压缩（增量）
-│   └── SessionContextHolder.java  # ThreadLocal 会话上下文（工具内取 sessionId）
-├── memory/                        # 记忆模块
-│   ├── MemoryConfig.java          # 装配中心
-│   ├── MemoryStore.java           # 长期记忆存储抽象接口
-│   ├── VectorMemoryStore.java     # 向量记忆存储封装
-│   ├── LongTermMemoryService.java # 长期记忆业务
-│   ├── model/AgentMessage.java    # 统一消息模型
-│   ├── inmemory/                  # 内存记忆实现
-│   └── external/                  # Redis + Milvus 实现
-├── session/                       # 会话状态管理
-│   ├── SessionManager.java        # 会话 token/轮次统计（Redis + 内存双模式）
+│   ├── Constant.java               # 常量统一管理
+│   └── SystemPrompt.java           # 系统提示词 + 压缩提示词
+├── context/                        # 上下文管理
+│   ├── ContextManager.java         # 后置溢出检查 + 压缩触发
+│   ├── CompressionService.java     # 对话历史压缩（增量）
+│   └── SessionContextHolder.java   # ThreadLocal 会话上下文（工具内取 sessionId）
+├── memory/                         # 记忆模块
+│   ├── MemoryConfig.java           # 装配中心
+│   ├── MemoryStore.java            # 长期记忆存储抽象接口
+│   ├── VectorMemoryStore.java      # 向量记忆存储封装
+│   ├── LongTermMemoryService.java  # 长期记忆业务
+│   ├── model/AgentMessage.java     # 统一消息模型
+│   ├── inmemory/                   # 内存记忆实现
+│   └── external/                   # Redis + Milvus 实现
+├── session/                        # 会话状态管理
+│   ├── SessionManager.java         # 会话 token/轮次统计（Redis + 内存双模式）
 │   └── model/SessionMemory.java
-├── tool/                          # LLM 可调用工具
-│   ├── AgentTool.java             # 工具抽象接口
-│   ├── ToolRegistry.java          # 工具注册表
-│   ├── DateTimeTool.java          # 日期时间
-│   ├── SearchMemoryTool.java      # 会话记忆检索（search_memory）
-│   └── SearchDocumentTool.java    # 文档知识库检索（search_document）
-├── rag/                           # 文档切块核心
-│   ├── SemanticTextSplitter.java  # 语义切块器
+├── tool/                           # LLM 可调用工具
+│   ├── AgentTool.java              # 工具抽象接口
+│   ├── ToolRegistry.java           # 工具注册表
+│   ├── DateTimeTool.java           # 日期时间
+│   ├── SearchMemoryTool.java       # 会话记忆检索（search_memory）
+│   └── SearchDocumentTool.java     # 文档知识库检索（search_document）
+├── rag/                            # 文档切块核心
+│   ├── SemanticTextSplitter.java   # 语义切块器
 │   └── DocumentSplitterFactory.java # 切块策略工厂
-├── dto/                           # 请求/响应结构
-│   ├── ChatRequest.java           # question + sessionId
+├── dto/                            # 请求/响应结构
+│   ├── ChatRequest.java            # question + sessionId
 │   ├── ChatResponse.java
 │   ├── ErrorResponse.java
-│   └── DocumentIngestResult.java  # 文档入库结果
+│   └── DocumentIngestResult.java   # 文档入库结果
 └── exception/GlobalExceptionHandler.java
 ```
 
 ## 开发约定
 
 - 源码含中文注释，文件统一 UTF-8（无 BOM）
-- 新增存储实现遵循「内存实现放 `memory.inmemory`、外部实现放 `memory.external`、
-  共享抽象留在 `memory` 根包」的布局
+- 新增存储实现遵循「内存实现放 `memory.inmemory`、外部实现放 `memory.external`、共享抽象留在 `memory` 根包」的布局
 
 ## License
 
