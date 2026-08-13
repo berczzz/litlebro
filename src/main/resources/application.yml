@@ -54,7 +54,7 @@ app:
   memory:
     # 短期记忆（STM）存储: inmemory(默认) | redis
     stm:
-      type: ${APP_MEMORY_STM_TYPE:redis}
+      type: ${APP_MEMORY_STM_TYPE:inmemory}
     # 长期记忆（LTM）存储: inmemory(默认) | milvus
     ltm:
       type: ${APP_MEMORY_LTM_TYPE:inmemory}
@@ -62,6 +62,30 @@ app:
     context:
       # 模型上下文窗口大小（token），超阈值的会话历史会被压缩
       max-tokens: ${APP_MEMORY_CONTEXT_MAX_TOKENS:128000}
+    # 向量检索配置
+    vector:
+      # 语义检索相似度阈值：低于该值的片段视为不相关，默认 0.2（宽召回，配合 LLM 精排）
+      similarity-threshold: ${APP_MEMORY_VECTOR_SIMILARITY_THRESHOLD:0.2}
+    # 会话记忆检索工具二次过滤阈值：低于该分数的片段丢弃
+    min-score: ${APP_MEMORY_MIN_SCORE:0.35}
+  rag:
+    # 文档知识库检索工具二次过滤阈值：低于该分数的片段丢弃
+    min-score: ${APP_RAG_MIN_SCORE:0.35}
+    # 文档切块策略: semantic(默认) | fixed
+    splitter:
+      strategy: ${APP_RAG_SPLITTER:semantic}
+      # fixed 策略：固定 token 切块大小
+      fixed-chunk-size: ${APP_RAG_FIXED_CHUNK:500}
+      # semantic 策略：断点判定模式 percentile(默认) | fixed
+      semantic-breakpoint-mode: ${APP_RAG_SEMANTIC_MODE:percentile}
+      # percentile 模式：差异序列取第 N 百分位为断点阈值
+      semantic-percentile: ${APP_RAG_SEMANTIC_PERCENTILE:95}
+      # fixed 模式：相邻段相似度低于该值处断句
+      semantic-threshold: ${APP_RAG_SEMANTIC_THRESHOLD:0.7}
+      # semantic 策略：滑动窗口大小
+      semantic-buffer-size: ${APP_RAG_SEMANTIC_BUFFER:3}
+      # semantic 策略：单块最大字符数，超限二次固定切分
+      semantic-max-chunk: ${APP_RAG_SEMANTIC_MAX_CHUNK:800}
 
 server:
   port: 8080

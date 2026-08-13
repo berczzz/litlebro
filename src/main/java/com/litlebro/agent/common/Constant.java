@@ -8,7 +8,9 @@ public final class Constant {
     public static final String CATEGORY_SUMMARY = "session_summary";
     public static final String CATEGORY_CHAT = "chat_message";
     public static final String CATEGORY_OTHER = "other";
+    public static final String CATEGORY_DOCUMENT = "document";
     public static final String MEMORY_TYPE = "agent_memory";
+    public static final String RAG_DOCUMENT_TYPE = "rag_document";
 
     // ==================== 记忆元数据字段名 ====================
     public static final String MD_ID = "id";
@@ -22,6 +24,8 @@ public final class Constant {
     public static final String MD_MEDIA = "media";
     public static final String MD_TOOL_CALLS = "toolCalls";
     public static final String MD_TOOL_RESPONSES = "toolResponses";
+    public static final String MD_SOURCE = "source";
+    public static final String MD_DOC_ID = "docId";
 
     // ==================== 摘要 ====================
     /** 回注 ChatMemory 的摘要 SystemMessage 前缀 */

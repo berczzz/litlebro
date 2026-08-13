@@ -29,13 +29,20 @@ public class VectorMemoryStore implements MemoryStore {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    /** 语义检索相似度阈值，低于该值的记录视为不相关 */
-    private static final double SIMILARITY_THRESHOLD = 0.65;
+    /**
+     * 语义检索相似度阈值，低于该值的记录视为不相关。
+     *
+     * <p>由配置项 {@code app.memory.vector.similarity-threshold} 注入，
+     * 默认 0.3。text-embedding 模型的余弦相似度对相关文本通常在 0.4~0.6，
+     * 阈值不宜设太高，否则会把相关片段全部过滤掉。
+     */
+    private final double similarityThreshold;
 
     private final VectorStore vectorStore;
 
-    public VectorMemoryStore(VectorStore vectorStore) {
+    public VectorMemoryStore(VectorStore vectorStore, double similarityThreshold) {
         this.vectorStore = vectorStore;
+        this.similarityThreshold = similarityThreshold;
     }
 
     @Override
@@ -78,7 +85,7 @@ public class VectorMemoryStore implements MemoryStore {
 
     @Override
     public List<AgentMessage> searchByCategory(String sessionId, String category, int limit) {
-        List<Document> docs = searchMemories(sessionId, category, limit);
+        List<Document> docs = searchByCategoryNoThreshold(sessionId, category, limit);
         List<AgentMessage> messages = new ArrayList<>();
         for (Document doc : docs) {
             AgentMessage am = toAgentMessage(doc);
@@ -124,7 +131,7 @@ public class VectorMemoryStore implements MemoryStore {
                             .query(query)
                             .topK(topK)
                             .filterExpression("sessionId == '" + sessionId + "'")
-                            .similarityThreshold(SIMILARITY_THRESHOLD)
+                            .similarityThreshold(similarityThreshold)
                             .build()
             );
         } catch (Exception e) {
@@ -186,6 +193,63 @@ public class VectorMemoryStore implements MemoryStore {
     public void deleteSessionMemories(String sessionId) {
         vectorStore.delete("sessionId == '" + sessionId + "'");
         log.info("向量记忆已删除 sessionId={}", sessionId);
+    }
+
+    /**
+     * 批量存储文档切块（RAG 知识库，全局共享，不绑定会话）。
+     * 每个切块携带 docId 与 source 元数据，便于按文档聚合与删除。
+     *
+     * @param chunks 切块后的 Document 列表（含 docId/source/category 元数据）
+     */
+    public void saveDocumentChunks(List<Document> chunks) {
+        if (CollectionUtils.isEmpty(chunks)) {
+            return;
+        }
+        try {
+            vectorStore.add(chunks);
+            log.info("文档切块已入库 count={}", chunks.size());
+        } catch (Exception e) {
+            log.warn("文档切块入库失败 原因: {}", e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 全局检索文档知识库（category == document，无 sessionId 过滤）。
+     *
+     * @param query 检索词
+     * @param topK  返回条数上限
+     * @return 命中的文档切块列表
+     */
+    public List<Document> searchDocuments(String query, int topK) {
+        try {
+            return vectorStore.similaritySearch(
+                    SearchRequest.builder()
+                            .query(query)
+                            .topK(topK)
+                            .filterExpression("category == '" + Constant.CATEGORY_DOCUMENT + "'")
+                            .similarityThreshold(similarityThreshold)
+                            .build()
+            );
+        } catch (Exception e) {
+            log.warn("文档知识库检索失败 query={} 原因: {}", query, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 按文档 ID 删除该文档的全部切块。
+     *
+     * @param docId 文档唯一标识
+     */
+    public void deleteByDocId(String docId) {
+        try {
+            vectorStore.delete("docId == '" + docId + "'");
+            log.info("文档切块已删除 docId={}", docId);
+        } catch (Exception e) {
+            log.warn("按文档 ID 删除切块失败 docId={} 原因: {}", docId, e.getMessage());
+            throw e;
+        }
     }
 
     /**
@@ -260,3 +324,4 @@ public class VectorMemoryStore implements MemoryStore {
         return 0;
     }
 }
+

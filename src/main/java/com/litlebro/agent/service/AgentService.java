@@ -3,6 +3,7 @@ package com.litlebro.agent.service;
 import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.context.ContextManager;
+import com.litlebro.agent.context.SessionContextHolder;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
@@ -64,6 +65,7 @@ public class AgentService {
 
     public String chat(String userMessage, String sessionId) {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
+        SessionContextHolder.set(sessionId);
         try {
             // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
             restoreContextIfEmpty(sessionId);
@@ -103,6 +105,9 @@ public class AgentService {
         } catch (Exception e) {
             log.error("会话 [{}] 处理失败", sessionId, e);
             return "抱歉，处理请求时出现错误: " + e.getMessage();
+        } finally {
+            // 清除线程局部会话上下文，避免线程池复用导致串号
+            SessionContextHolder.clear();
         }
     }
 

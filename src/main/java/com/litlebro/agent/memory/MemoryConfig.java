@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
 import com.litlebro.agent.memory.external.RedisChatMemory;
+import com.litlebro.agent.rag.DocumentSplitterFactory;
+import com.litlebro.agent.rag.SemanticTextSplitter;
 import com.litlebro.agent.session.SessionManager;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.param.ConnectParam;
@@ -128,13 +130,39 @@ public class MemoryConfig {
     // ==================== 业务装配 ====================
 
     @Bean
-    public VectorMemoryStore vectorMemoryStore(VectorStore vectorStore) {
-        return new VectorMemoryStore(vectorStore);
+    public VectorMemoryStore vectorMemoryStore(
+            VectorStore vectorStore,
+            @Value("${app.memory.vector.similarity-threshold:0.2}") double similarityThreshold) {
+        return new VectorMemoryStore(vectorStore, similarityThreshold);
     }
 
     @Bean
     public CompressionService compressionService(ChatClient chatClient) {
         return new CompressionService(chatClient);
+    }
+
+    @Bean
+    public SemanticTextSplitter semanticTextSplitter(
+            EmbeddingModel embeddingModel,
+            @Value("${app.rag.splitter.semantic-breakpoint-mode:percentile}") String breakpointMode,
+            @Value("${app.rag.splitter.semantic-percentile:95}") double percentile,
+            @Value("${app.rag.splitter.semantic-threshold:0.7}") double threshold,
+            @Value("${app.rag.splitter.semantic-buffer-size:3}") int bufferSize,
+            @Value("${app.rag.splitter.semantic-max-chunk:800}") int maxChunk) {
+        return new SemanticTextSplitter(
+                embeddingModel,
+                "fixed".equalsIgnoreCase(breakpointMode)
+                        ? SemanticTextSplitter.BreakpointMode.FIXED
+                        : SemanticTextSplitter.BreakpointMode.PERCENTILE,
+                percentile, threshold, bufferSize, maxChunk);
+    }
+
+    @Bean
+    public DocumentSplitterFactory documentSplitterFactory(
+            @Value("${app.rag.splitter.strategy:semantic}") String strategy,
+            @Value("${app.rag.splitter.fixed-chunk-size:500}") int fixedChunkSize,
+            SemanticTextSplitter semanticTextSplitter) {
+        return new DocumentSplitterFactory(strategy, fixedChunkSize, semanticTextSplitter);
     }
 
     @Bean
