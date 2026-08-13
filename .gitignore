@@ -1,0 +1,26 @@
+# Build
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets - never commit real API keys
+application-local.yml
+*.key
+.env
+
+
+./AGENTS.md

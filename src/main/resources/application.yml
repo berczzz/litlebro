@@ -1,0 +1,75 @@
+spring:
+  application:
+    name: litlebro
+
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.autoconfigure.vectorstore.milvus.MilvusVectorStoreAutoConfiguration
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:your-api-key-here}
+      # 注意: Spring AI 会自动拼接 /v1/{endpoint}，base-url 不要带尾部 /v1，否则会变成 /v1/v1/...
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      chat:
+        options:
+          model: qwen3.8-max
+          temperature: 0.7
+          max-tokens: 131072
+      # 注意: 默认的 text-embedding-ada-002 在阿里 MaaS/DashScope 网关不存在，
+      # 必须显式指定网关支持的 embedding 模型（这里用 text-embedding-v3，
+      # 若你的网关不支持请按模型列表换 text-embedding-v2 / text-embedding-v4 等）。
+      embedding:
+        options:
+          model: text-embedding-v3
+      retry:
+        max-attempts: 3
+        backoff:
+          initial-interval: 1000
+          multiplier: 2
+    vectorstore:
+      milvus:
+        client:
+          host: ${MILVUS_HOST:localhost}
+          port: ${MILVUS_PORT:19530}
+          username: ${MILVUS_USERNAME:}
+          password: ${MILVUS_PASSWORD:}
+        database-name: agent_memory
+        collection-name: agent_memories
+        index-type: IVF_FLAT
+        metric-type: COSINE
+        embedding-dimension: 1536
+        initialize-schema: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 4
+          max-wait: 3000ms
+
+app:
+  memory:
+    # 记忆存储模式: auto(默认) | memory | external
+    # auto     — 自动检测: 当 redis.enabled 和 milvus.enabled 均为 true 时使用 Redis+Milvus, 否则使用内存实现
+    # memory   — 强制使用内存实现(InMemoryChatMemory + InMemorySessionMemoryService + SimpleVectorStore)
+    # external — 强制使用 Redis + Milvus
+    mode: auto
+    redis:
+      enabled: ${REDIS_ENABLED:false}
+    milvus:
+      enabled: ${MILVUS_ENABLED:false}
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.litlebro.agent: DEBUG
+    org.springframework.ai.chat.client.advisor: DEBUG
