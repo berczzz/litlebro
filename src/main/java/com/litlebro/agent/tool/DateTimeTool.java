@@ -32,7 +32,7 @@ import java.time.temporal.ChronoUnit;
  * <p>使用 Java 8+ 的 java.time API 而非传统的 Date/Calendar，
  * 因为 java.time 是不可变且线程安全的，API 更清晰直观。
  */
-//@Component
+@Component
 public class DateTimeTool implements AgentTool {
 
     @Override

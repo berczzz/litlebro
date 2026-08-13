@@ -46,24 +46,18 @@ src/main/java/com/litlebro/agent/
 │   ├── ContextManager.java        # 上下文组装 + 溢出压缩（compactIfNeeded）
 │   └── CompressionService.java    # 对话历史压缩（支持增量压缩）
 ├── memory/                        # 记忆模块
-│   ├── MemoryConfig.java          # 装配中心（启用 @Async）
-│   ├── MemoryModeConditions.java  # 存储模式条件注解
+│   ├── MemoryConfig.java          # 装配中心（启用 @Async，STM/LTM 独立配置）
 │   ├── MemoryStore.java           # 长期记忆存储抽象接口
-│   ├── SessionTracker.java        # 会话轮次计数器（轻量替代 MTM）
 │   ├── VectorMemoryStore.java     # 长期记忆向量存储封装
 │   ├── LongTermMemoryService.java # 长期记忆业务服务（摘要存取 + 上下文构建）
 │   ├── model/Memory.java          # 长期记忆实体（按 sessionId 隔离）
-│   ├── inmemory/                  # 内存记忆实现
-│   │   └── InMemoryMemoryConfig.java          # 内存配置（默认）
-│   └── external/                  # 外部记忆实现
-│       ├── ExternalMemoryConfig.java          # Redis + Milvus 配置
+│   ├── inmemory/                  # 内存记忆实现（RedisChatMemory 之外的实现可放此包）
+│   └── external/
 │       └── RedisChatMemory.java               # 短期记忆（30 分钟 TTL）
 ├── tool/                          # LLM 可调用工具
 │   ├── AgentTool.java
-│   ├── CalculatorTool.java
 │   ├── DateTimeTool.java
-│   ├── ToolRegistry.java
-│   └── WeatherTool.java
+│   └── ToolRegistry.java
 ├── dto/                           # 请求/响应结构
 │   ├── ChatRequest.java           # question + sessionId（无 userId）
 │   ├── ChatResponse.java
@@ -73,29 +67,28 @@ src/main/java/com/litlebro/agent/
 
 ## 记忆架构
 
-二层记忆由 `app.memory.mode` 切换实现，两个子包互斥生效：
+二层记忆由两个独立配置项分别切换，互不影响：
 
-| 记忆层 | 内存实现（inmemory） | 外部实现（external） |
-| --- | --- | --- |
-| 短期（ChatMemory） | `InMemoryChatMemory` | `RedisChatMemory`（30 分钟 TTL） |
-| 长期（VectorStore） | `SimpleVectorStore` | `MilvusVectorStore` |
+| 记忆层 | 配置项 | 内存实现 | 外部实现 |
+| --- | --- | --- | --- |
+| 短期（ChatMemory） | `app.memory.stm.type` | `InMemoryChatMemory`（`inmemory`） | `RedisChatMemory`（`redis`，30 分钟 TTL） |
+| 长期（VectorStore） | `app.memory.ltm.type` | `SimpleVectorStore`（`inmemory`） | `MilvusVectorStore`（`milvus`） |
 
 **记忆按 sessionId 隔离**，每个会话有独立的记忆空间。
 
-模式判断见 `MemoryModeConditions`：
-
-- `auto`（默认）：`REDIS_ENABLED` 与 `MILVUS_ENABLED` 均为 `true` 时用外部实现，否则回退内存
-- `memory`：强制内存实现
-- `external`：强制 Redis + Milvus 实现
+- STM 用 `redis` 时会话状态（SessionManager）也跟随存 Redis，否则回退内存
+- 存储实现互不耦合，可自由组合（如 STM 用 redis + LTM 用 inmemory）
 
 ### Compaction 压缩机制（借鉴 opencode）
 
-每次对话后检查 Token 是否超出模型窗口的 75%，超出则触发增量压缩：
+每次对话后检查会话累积的输入 Token（模型返回的 usage）是否超出模型窗口的 75%，
+超出则触发增量压缩：
 
-1. 保留最近 2 轮（4 条消息）原文
+1. 保留最近 6 条消息原文
 2. 旧消息 + 上一次压缩摘要 → LLM 压缩 → 新摘要存入长期记忆（`CATEGORY_SUMMARY`）
-3. 清空 ChatMemory，重新注入摘要 + 最近 2 轮原文
-4. 下次压缩时传入旧摘要做增量，不重复压缩同一段历史
+3. 重建 ChatMemory：摘要 SystemMessage + 最近 6 条原文
+4. 重置会话当前 Token 占用，继续后续对话
+5. 下次压缩时传入旧摘要做增量，不重复压缩同一段历史
 
 压缩提示词是任务导向的（"做了什么、决定了什么、什么还没做"），而非提取个人事实。
 
@@ -115,13 +108,12 @@ src/main/java/com/litlebro/agent/
 | 配置 | 环境变量 | 默认值 |
 | --- | --- | --- |
 | LLM API Key | `OPENAI_API_KEY` | `your-api-key-here` |
-| LLM Base URL | `OPENAI_BASE_URL` | `https://api.openai.com` |
-| 模型 | — | `gpt-4o-mini` |
+| LLM Base URL | `OPENAI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode` |
+| 模型 | — | `qwen3.8-max` |
 | Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
 | Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
-| 记忆模式 | `APP_MEMORY_MODE`（`app.memory.mode`） | `auto` |
-| Redis 启用 | `REDIS_ENABLED` | `false` |
-| Milvus 启用 | `MILVUS_ENABLED` | `false` |
+| 短期记忆类型 | `APP_MEMORY_STM_TYPE`（`app.memory.stm.type`） | `inmemory` |
+| 长期记忆类型 | `APP_MEMORY_LTM_TYPE`（`app.memory.ltm.type`） | `inmemory` |
 
 ## 开发约定
 

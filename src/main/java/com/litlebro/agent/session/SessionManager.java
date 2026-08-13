@@ -1,6 +1,9 @@
 package com.litlebro.agent.session;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.session.model.SessionMemory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 
 import java.util.Map;
@@ -11,18 +14,22 @@ import java.util.concurrent.TimeUnit;
  * 会话管理器，维护会话的运行时状态（token 累积值、轮次、模型等）。
  *
  * <p>当 Redis 可用时，SessionMemory 存 Redis（30min TTL），重启不丢；
- * 否则回退 ConcurrentHashMap。
+ * 否则回退 ConcurrentHashMap。Redis 值以 Jackson JSON 字符串存储。
  */
 public class SessionManager {
+
+    private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
     private static final String SESSION_KEY_PREFIX = "agent:session:memory:";
     private static final long TTL_MINUTES = 30;
 
     private final Map<String, SessionMemory> fallback = new ConcurrentHashMap<>();
     private final RedisTemplate<String, Object> redisTemplate;
+    private final ObjectMapper objectMapper;
 
-    public SessionManager(RedisTemplate<String, Object> redisTemplate) {
+    public SessionManager(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     public SessionMemory getOrCreate(String sessionId) {
@@ -37,8 +44,19 @@ public class SessionManager {
 
     public SessionMemory get(String sessionId) {
         if (redisTemplate != null) {
-            Object value = redisTemplate.opsForValue().get(SESSION_KEY_PREFIX + sessionId);
-            return value instanceof SessionMemory ? (SessionMemory) value : null;
+            try {
+                Object value = redisTemplate.opsForValue().get(SESSION_KEY_PREFIX + sessionId);
+                if (value instanceof String json && !json.isBlank()) {
+                    return objectMapper.readValue(json, SessionMemory.class);
+                }
+            } catch (Exception e) {
+                log.warn("会话状态反序列化失败，触发重建 sessionId={} 原因: {}", sessionId, e.getMessage());
+                try {
+                    redisTemplate.delete(SESSION_KEY_PREFIX + sessionId);
+                } catch (Exception ignored) {
+                }
+            }
+            return null;
         }
         return fallback.get(sessionId);
     }
@@ -51,12 +69,12 @@ public class SessionManager {
                 sessionId,
                 old.parentId(),
                 mergedModel,
-                old.totalUseTokens() + promptTokens + completionTokens,
+                old.totalUseTokens() + promptTokens,
                 old.totalCompletionTokens() + completionTokens,
                 old.totalPromptTokens() + promptTokens,
-                promptTokens + completionTokens,
-                completionTokens,
-                promptTokens,
+                old.curUseTokens() + promptTokens,
+                old.curCompletionTokens() + completionTokens,
+                old.curPromptTokens() + promptTokens,
                 Map.of("turnCount", turnCount)
         );
         save(sessionId, updated);
@@ -87,7 +105,12 @@ public class SessionManager {
 
     private void save(String sessionId, SessionMemory memory) {
         if (redisTemplate != null) {
-            redisTemplate.opsForValue().set(SESSION_KEY_PREFIX + sessionId, memory, TTL_MINUTES, TimeUnit.MINUTES);
+            try {
+                String json = objectMapper.writeValueAsString(memory);
+                redisTemplate.opsForValue().set(SESSION_KEY_PREFIX + sessionId, json, TTL_MINUTES, TimeUnit.MINUTES);
+            } catch (Exception e) {
+                log.warn("会话状态序列化失败 sessionId={} 原因: {}", sessionId, e.getMessage());
+            }
         } else {
             fallback.put(sessionId, memory);
         }

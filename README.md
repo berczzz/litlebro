@@ -96,31 +96,35 @@ curl http://localhost:8080/api/agent/memory/demo-1
 
 ## 记忆架构
 
-记忆按 `app.memory.mode` 切换，两个子包互斥生效：
+短期记忆（STM）与长期记忆（LTM）**独立配置**，互不影响：
 
-| 记忆层 | 内存实现 | 外部实现 |
-| --- | --- | --- |
-| 短期（ChatMemory） | `InMemoryChatMemory` | `RedisChatMemory`（30 分钟 TTL） |
-| 长期（VectorStore） | `SimpleVectorStore` | `MilvusVectorStore` |
-| 会话状态（SessionManager） | ConcurrentHashMap | Redis（30 分钟 TTL） |
+| 记忆层 | 配置项 | 内存实现 | 外部实现 |
+| --- | --- | --- | --- |
+| 短期（ChatMemory） | `app.memory.stm.type` | `InMemoryChatMemory`（`inmemory`） | `RedisChatMemory`（`redis`，30 分钟 TTL） |
+| 长期（VectorStore） | `app.memory.ltm.type` | `SimpleVectorStore`（`inmemory`） | `MilvusVectorStore`（`milvus`） |
+| 会话状态（SessionManager） | 跟随 STM | ConcurrentHashMap | Redis（30 分钟 TTL） |
 
 **记忆按 sessionId 隔离**，每个会话有独立记忆空间。
 
-模式判断见 `MemoryModeConditions`：
+存储实现互不耦合，可自由组合。例如：
 
-- `auto`（默认）：`REDIS_ENABLED` 与 `MILVUS_ENABLED` 均为 `true` 时用外部实现，否则回退内存
-- `memory`：强制内存实现
-- `external`：强制 Redis + Milvus
+```yaml
+app:
+  memory:
+    stm:
+      type: redis      # 短期记忆用 Redis
+    ltm:
+      type: inmemory   # 长期记忆用进程内向量库
+```
 
 ### 配置说明
 
 | 配置 | 环境变量 | 默认值 |
 | --- | --- | --- |
-| 记忆模式 | `APP_MEMORY_MODE` | `auto` |
+| 短期记忆类型 | `APP_MEMORY_STM_TYPE`（`app.memory.stm.type`） | `inmemory` |
+| 长期记忆类型 | `APP_MEMORY_LTM_TYPE`（`app.memory.ltm.type`） | `inmemory` |
 | Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
 | Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
-| Redis 启用 | `REDIS_ENABLED` | `false` |
-| Milvus 启用 | `MILVUS_ENABLED` | `false` |
 
 ### Compaction 压缩流程
 

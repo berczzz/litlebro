@@ -1,5 +1,11 @@
 package com.litlebro.agent.memory.external;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.litlebro.agent.memory.MessageCodec;
+import com.litlebro.agent.memory.model.AgentMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -11,22 +17,21 @@ import java.util.concurrent.TimeUnit;
 /**
  * 基于 Redis 的短期聊天记忆实现，实现 Spring AI 的 {@link ChatMemory} 接口。
  *
- * <p>这是三层记忆架构中的短期记忆层（STM — Short-Term Memory），
+ * <p>这是二层记忆架构中的短期记忆层（STM — Short-Term Memory），
  * 对应传统的多轮对话历史，供 Spring AI 框架自动管理对话上下文。
  *
  * <p>设计要点：
  * <ul>
- *   <li>使用 Redis 作为存储后端，支持分布式部署和会话共享</li>
+ *   <li>存储统一记忆实体 {@link AgentMessage} 的 JSON 列表（与长期记忆共用同一对象），
+ *       Redis 值序列化采用 StringRedisSerializer + Jackson，不再依赖 fastjson</li>
+ *   <li>接口边界通过 {@link MessageCodec} 在 Spring AI 的 {@link Message} 与 {@link AgentMessage} 之间双向转换</li>
  *   <li>TTL 设为 30 分钟，超时自动清理，避免内存泄漏</li>
- *   <li>MSG_AT_MEMORY_ADVISOR 直接使用此实现获取对话历史注入 LLM 上下文</li>
  *   <li>get 方法返回最近 lastN 条消息，而非全量，避免上下文过长</li>
  * </ul>
- *
- * <p>与中期记忆（SessionMemoryService）的区别：
- * 短期记忆面向 Spring AI 框架，存储 Message 对象；中期记忆面向
- * 会话管理，存储结构化 JSON 数据，TTL 更长（7 天）。
  */
 public class RedisChatMemory implements ChatMemory {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisChatMemory.class);
 
     /** Redis 键前缀，stm 代表 Short-Term Memory */
     private static final String KEY_PREFIX = "agent:stm:";
@@ -34,9 +39,11 @@ public class RedisChatMemory implements ChatMemory {
     private static final long TTL_MINUTES = 30;
 
     private final RedisTemplate<String, Object> redisTemplate;
+    private final ObjectMapper objectMapper;
 
-    public RedisChatMemory(RedisTemplate<String, Object> redisTemplate) {
+    public RedisChatMemory(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -48,11 +55,17 @@ public class RedisChatMemory implements ChatMemory {
      */
     @Override
     public void add(String conversationId, List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return;
+        }
         String key = KEY_PREFIX + conversationId;
-        List<Message> existing = getConversationMessages(conversationId);
-        existing.addAll(messages);
-        // 每次写入都刷新 TTL，保持活跃会话不过期
-        redisTemplate.opsForValue().set(key, existing, TTL_MINUTES, TimeUnit.MINUTES);
+        List<AgentMessage> existing = getAgentMessages(conversationId);
+        existing.addAll(MessageCodec.toAgentMessages(messages, conversationId));
+        try {
+            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(existing), TTL_MINUTES, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            log.warn("短期记忆写入失败 conversationId={} 原因: {}", conversationId, e.getMessage());
+        }
     }
 
     /**
@@ -65,13 +78,16 @@ public class RedisChatMemory implements ChatMemory {
      */
     @Override
     public List<Message> get(String conversationId, int lastN) {
-        List<Message> messages = getConversationMessages(conversationId);
-        int size = messages.size();
+        List<AgentMessage> all = getAgentMessages(conversationId);
+        int size = all.size();
+        List<AgentMessage> sub;
         if (size <= lastN) {
-            return new ArrayList<>(messages);
+            sub = new ArrayList<>(all);
+        } else {
+            // 截取最后 lastN 条消息，控制上下文长度
+            sub = new ArrayList<>(all.subList(size - lastN, size));
         }
-        // 截取最后 lastN 条消息，控制上下文长度
-        return new ArrayList<>(messages.subList(size - lastN, size));
+        return MessageCodec.toMessages(sub);
     }
 
     /**
@@ -85,19 +101,30 @@ public class RedisChatMemory implements ChatMemory {
     }
 
     /**
-     * 从 Redis 读取指定会话的完整消息列表。
-     * 使用 @SuppressWarnings 抑制 unchecked 转换警告（Redis 存储的泛型信息在运行时擦除）。
+     * 从 Redis 读取指定会话的完整消息列表（统一记忆实体形态）。
+     * 旧格式脏数据（fastjson/JDK 序列化）反序列化失败时删除该键并返回空列表，自动容错。
      *
      * @param conversationId 会话 ID
-     * @return 消息列表，不存在时返回空列表
+     * @return 统一记忆实体列表，不存在时返回空列表
      */
-    @SuppressWarnings("unchecked")
-    private List<Message> getConversationMessages(String conversationId) {
+    private List<AgentMessage> getAgentMessages(String conversationId) {
         String key = KEY_PREFIX + conversationId;
-        Object value = redisTemplate.opsForValue().get(key);
-        if (value instanceof List<?> list) {
-            return (List<Message>) list;
+        try {
+            Object value = redisTemplate.opsForValue().get(key);
+            if (value == null) {
+                return new ArrayList<>();
+            }
+            String json = value instanceof String s ? s : value.toString();
+            List<AgentMessage> list = objectMapper.readValue(json, new TypeReference<List<AgentMessage>>() {
+            });
+            return list != null ? new ArrayList<>(list) : new ArrayList<>();
+        } catch (Exception e) {
+            log.warn("短期记忆反序列化失败，已清除该会话记录 conversationId={} 原因: {}", conversationId, e.getMessage());
+            try {
+                redisTemplate.delete(key);
+            } catch (Exception ignored) {
+            }
+            return new ArrayList<>();
         }
-        return new ArrayList<>();
     }
 }

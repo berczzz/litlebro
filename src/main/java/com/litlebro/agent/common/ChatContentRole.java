@@ -7,4 +7,5 @@ public final class ChatContentRole {
 
     public static final String USER_ROLE = "user";
     public static final String ASSISTANT_ROLE = "assistant";
+    public static final String SYSTEM_ROLE = "system";
 }

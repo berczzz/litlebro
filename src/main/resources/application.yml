@@ -8,7 +8,7 @@ spring:
 
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:your-api-key-here}
+      api-key: sk-ws-H.RPIHMPE.f93W.MEYCIQCTW5vpo_hj6JBGLNAyp-PINTWunsm4lYRyxhMgEuIG-AIhAKRNR75uNoZTTMErck4iKqFXNZDUM4XmPmsEyEqGy9g3
       # 注意: Spring AI 会自动拼接 /v1/{endpoint}，base-url 不要带尾部 /v1，否则会变成 /v1/v1/...
       base-url: https://dashscope.aliyuncs.com/compatible-mode
       chat:
@@ -56,15 +56,16 @@ spring:
 
 app:
   memory:
-    # 记忆存储模式: auto(默认) | memory | external
-    # auto     — 自动检测: 当 redis.enabled 和 milvus.enabled 均为 true 时使用 Redis+Milvus, 否则使用内存实现
-    # memory   — 强制使用内存实现(InMemoryChatMemory + InMemorySessionMemoryService + SimpleVectorStore)
-    # external — 强制使用 Redis + Milvus
-    mode: auto
-    redis:
-      enabled: ${REDIS_ENABLED:false}
-    milvus:
-      enabled: ${MILVUS_ENABLED:false}
+    # 短期记忆（STM）存储: inmemory(默认) | redis
+    # inmemory — 使用进程内 InMemoryChatMemory
+    # redis    — 使用 RedisChatMemory（30 分钟 TTL）
+    stm:
+      type: ${APP_MEMORY_STM_TYPE:redis}
+    # 长期记忆（LTM）存储: inmemory(默认) | milvus
+    # inmemory — 使用 SimpleVectorStore（进程内）
+    # milvus   — 使用 MilvusVectorStore
+    ltm:
+      type: ${APP_MEMORY_LTM_TYPE:inmemory}
 
 server:
   port: 8080

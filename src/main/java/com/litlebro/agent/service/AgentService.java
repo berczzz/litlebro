@@ -3,6 +3,7 @@ package com.litlebro.agent.service;
 import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.memory.LongTermMemoryService;
+import com.litlebro.agent.memory.model.AgentMessage;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
 import com.litlebro.agent.tool.ToolRegistry;
@@ -10,12 +11,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,16 +47,19 @@ public class AgentService {
     private final ContextManager contextManager;
     private final LongTermMemoryService longTermMemoryService;
     private final SessionManager sessionManager;
+    private final ChatMemory chatMemory;
 
     public AgentService(ChatClient chatClient, ToolRegistry toolRegistry,
                         ContextManager contextManager,
                         LongTermMemoryService longTermMemoryService,
-                        SessionManager sessionManager) {
+                        SessionManager sessionManager,
+                        ChatMemory chatMemory) {
         this.chatClient = chatClient;
         this.toolRegistry = toolRegistry;
         this.contextManager = contextManager;
         this.longTermMemoryService = longTermMemoryService;
         this.sessionManager = sessionManager;
+        this.chatMemory = chatMemory;
     }
 
     public String chat(String userMessage) {
@@ -58,6 +69,9 @@ public class AgentService {
     public String chat(String userMessage, String sessionId) {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
         try {
+            // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
+            restoreContextIfEmpty(sessionId);
+
             ChatResponse response = chatClient.prompt()
                     .user(userMessage)
                     .tools(toolRegistry.toToolArray())
@@ -127,8 +141,31 @@ public class AgentService {
     public Map<String, Object> getSessionMemory(String sessionId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sessionId", sessionId);
-        result.put("summary", longTermMemoryService.getLatestSummary(sessionId));
-        result.put("contextPrompt", longTermMemoryService.buildContextPrompt(sessionId, "用户信息"));
+        result.put("lastSummary", longTermMemoryService.getLatestSummary(sessionId));
+        result.put("stmMessages", longTermMemoryService.getStmMessage(sessionId));
+        result.put("ltmMessages", longTermMemoryService.getChatMessages(sessionId, 0, Integer.MAX_VALUE));
         return result;
     }
+
+    /**
+     * 短期记忆为空（首次对话、30 分钟闲置过期被 Redis 清理）时，
+     * 从长期记忆（向量库）恢复上下文回注 ChatMemory：
+     * 摘要 SystemMessage（压缩点）+ 压缩点之后的增量消息，避免模型"失忆"。
+     */
+    private void restoreContextIfEmpty(String sessionId) {
+        List<Message> existing = chatMemory.get(sessionId, Integer.MAX_VALUE);
+        if (existing != null && !existing.isEmpty()) {
+            return;
+        }
+
+        // 在长期记忆中查询短期记忆
+        List<Message> rebuilt = longTermMemoryService.getStmMessage(sessionId);
+        if (rebuilt.isEmpty()) {
+            return;
+        }
+        chatMemory.add(sessionId, rebuilt);
+        log.info("短期记忆为空，已从长期记忆恢复上下文：增量消息数={} sessionId={}", rebuilt.size(), sessionId);
+    }
+
+
 }
