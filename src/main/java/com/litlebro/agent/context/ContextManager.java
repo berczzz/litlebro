@@ -61,6 +61,25 @@ public class ContextManager {
         doCompact(sessionId);
     }
 
+    /**
+     * 短期记忆为空（首次对话、30 分钟闲置过期被 Redis 清理）时，
+     * 从长期记忆（向量库）恢复上下文回注 ChatMemory：
+     * 摘要 SystemMessage（压缩点）+ 压缩点之后的增量消息，避免模型"失忆"。
+     * 阻塞式 {@code AgentService} 与流式 {@code AgentStreamService} 共用。
+     */
+    public void restoreContextIfEmpty(String sessionId) {
+        List<Message> existing = chatMemory.get(sessionId, Integer.MAX_VALUE);
+        if (existing != null && !existing.isEmpty()) {
+            return;
+        }
+        List<Message> rebuilt = longTermMemoryService.getStmMessage(sessionId);
+        if (rebuilt.isEmpty()) {
+            return;
+        }
+        chatMemory.add(sessionId, rebuilt);
+        log.info("短期记忆为空，已从长期记忆恢复上下文：增量消息数={} sessionId={}", rebuilt.size(), sessionId);
+    }
+
     private void doCompact(String sessionId) {
         List<Message> allMessages = chatMemory.get(sessionId, Integer.MAX_VALUE);
         if (allMessages == null || allMessages.isEmpty()) {

@@ -17,6 +17,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Runtime data - conversation attachments (app.attachment.dir)
+data/
+
 # Secrets - never commit real API keys
 application-local.yml
 *.key

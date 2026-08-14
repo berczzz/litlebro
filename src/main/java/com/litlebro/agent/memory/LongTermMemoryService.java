@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.document.Document;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.util.CollectionUtils;
 
 import java.util.*;
@@ -63,6 +64,13 @@ public class LongTermMemoryService {
         log.info("会话摘要已存入向量库 sessionId={}", sessionId);
     }
 
+    /**
+     * 将一条对话消息持久化到长期记忆。
+     *
+     * <p>异步执行（{@code ltmTaskExecutor} 线程池），避免 embedding + 向量入库
+     * 阻塞对话输出（流式场景下保证 done 事件不被拖慢）。
+     */
+    @Async("ltmTaskExecutor")
     public void saveChat(String sessionId, String chatContent, String role, int costTokens) {
         if (chatContent == null || chatContent.isBlank()) {
             return;

@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * 附件存储服务：负责附件落盘、注册、懒解析与删除。
@@ -112,29 +113,6 @@ public class AttachmentStore {
     }
 
     /**
-     * 读取附件纯文本内容，pdf/word/excel 首次访问时懒解析并缓存 txtPath。
-     *
-     * @param fileId 附件唯一标识
-     * @return 文本内容，附件不存在返回 null
-     * @throws IOException 解析或读取失败时抛出
-     */
-    public String readText(String fileId) throws IOException {
-        AttachmentEntry entry = registry.get(fileId);
-        if (entry == null) {
-            return null;
-        }
-        if (entry.txtPath() != null && Files.exists(entry.txtPath())) {
-            return Files.readString(entry.txtPath(), StandardCharsets.UTF_8);
-        }
-        String ext = extensionOf(entry.name());
-        if (PLAIN_TEXT_EXT.contains(ext)) {
-            return Files.readString(entry.rawPath(), StandardCharsets.UTF_8);
-        }
-        // 懒解析：pdf/word/excel 等二进制格式，首次访问才解析
-        return lazyParse(entry);
-    }
-
-    /**
      * 读取附件原始字节（供记忆回放重建 Media 使用）。
      *
      * @param fileId 附件唯一标识
@@ -156,6 +134,8 @@ public class AttachmentStore {
     /**
      * 按行读取附件文本（供 read_file 工具使用），支持起始/结束行号切片。
      *
+     * <p>采用 {@link Files#lines} 流式读取，只把目标行载入内存，避免大文件 OOM。
+     *
      * @param fileId     附件唯一标识
      * @param startLine  起始行号（从 1 开始）
      * @param endLine    结束行号（含），小于 startLine 或超出文件范围时自动收拢
@@ -163,29 +143,37 @@ public class AttachmentStore {
      * @throws IOException 解析或读取失败时抛出
      */
     public String readLines(String fileId, int startLine, int endLine) throws IOException {
-        String text = readText(fileId);
-        if (text == null) {
+        Path textPath = textPathOf(fileId);
+        if (textPath == null) {
             return null;
         }
-        String[] lines = text.split("\n", -1);
         int start = Math.max(1, startLine);
-        int end = endLine <= 0 ? lines.length : Math.min(lines.length, endLine);
-        if (start > lines.length) {
-            return "[文件共 " + lines.length + " 行，起始行超出范围]";
-        }
-        if (start > end) {
-            end = start;
-        }
         StringBuilder sb = new StringBuilder();
-        for (int i = start; i <= end; i++) {
-            String line = lines[i - 1];
-            sb.append(i).append(": ").append(line).append("\n");
+        long lineNo = 0;
+        boolean inRange = false;
+        try (Stream<String> lines = Files.lines(textPath, StandardCharsets.UTF_8)) {
+            for (String line : (Iterable<String>) lines::iterator) {
+                lineNo++;
+                if (lineNo < start) {
+                    continue;
+                }
+                if (endLine > 0 && lineNo > endLine) {
+                    break;
+                }
+                inRange = true;
+                sb.append(lineNo).append(": ").append(line).append("\n");
+            }
+        }
+        if (!inRange) {
+            return "[起始行 " + start + " 超出文件范围]";
         }
         return sb.toString();
     }
 
     /**
      * 按正则检索附件文本（供 grep_file 工具使用），返回带行号的匹配行。
+     *
+     * <p>采用 {@link Files#lines} 流式读取，逐行匹配、只保留命中结果，避免大文件 OOM。
      *
      * @param fileId   附件唯一标识
      * @param pattern  正则表达式
@@ -194,24 +182,53 @@ public class AttachmentStore {
      * @throws IOException 解析或读取失败时抛出
      */
     public String grep(String fileId, String pattern, int maxLines) throws IOException {
-        String text = readText(fileId);
-        if (text == null) {
+        Path textPath = textPathOf(fileId);
+        if (textPath == null) {
             return null;
         }
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern);
-        String[] lines = text.split("\n", -1);
         StringBuilder sb = new StringBuilder();
+        long lineNo = 0;
         int count = 0;
-        for (int i = 0; i < lines.length && count < maxLines; i++) {
-            if (p.matcher(lines[i]).find()) {
-                sb.append(i + 1).append(": ").append(lines[i]).append("\n");
-                count++;
+        try (Stream<String> lines = Files.lines(textPath, StandardCharsets.UTF_8)) {
+            for (String line : (Iterable<String>) lines::iterator) {
+                lineNo++;
+                if (count >= maxLines) {
+                    break;
+                }
+                if (p.matcher(line).find()) {
+                    sb.append(lineNo).append(": ").append(line).append("\n");
+                    count++;
+                }
             }
         }
         if (count == 0) {
             return "未找到匹配内容。";
         }
         return sb.toString();
+    }
+
+    /**
+     * 解析附件文本路径：纯文本直接返回原文件；pdf/word/excel 首次访问时懒解析为 txt 并缓存。
+     *
+     * @param fileId 附件唯一标识
+     * @return 可流式读取的文本文件路径，附件不存在返回 null
+     * @throws IOException 懒解析失败时抛出
+     */
+    private Path textPathOf(String fileId) throws IOException {
+        AttachmentEntry entry = registry.get(fileId);
+        if (entry == null) {
+            return null;
+        }
+        if (entry.txtPath() != null && Files.exists(entry.txtPath())) {
+            return entry.txtPath();
+        }
+        String ext = extensionOf(entry.name());
+        if (PLAIN_TEXT_EXT.contains(ext)) {
+            return entry.rawPath();
+        }
+        // 懒解析：pdf/word/excel 等二进制格式，首次访问才解析为 txt 并缓存
+        return lazyParse(entry);
     }
 
     /**
@@ -260,8 +277,10 @@ public class AttachmentStore {
 
     /**
      * 懒解析二进制附件为纯文本并缓存 txtPath。
+     *
+     * @return 懒解析生成的 txt 文件路径
      */
-    private String lazyParse(AttachmentEntry entry) throws IOException {
+    private Path lazyParse(AttachmentEntry entry) throws IOException {
         DocumentParser parser;
         try {
             parser = parserFactory.resolve(entry.name());
@@ -275,7 +294,7 @@ public class AttachmentStore {
         Files.writeString(txtPath, text, StandardOpenOption.CREATE_NEW);
         registry.register(entry.withTxtPath(txtPath));
         log.info("附件懒解析完成 fileId={} name={} 文本长度={}", entry.fileId(), entry.name(), text.length());
-        return text;
+        return txtPath;
     }
 
     private String extensionOf(String name) {

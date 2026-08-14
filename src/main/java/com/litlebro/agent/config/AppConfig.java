@@ -41,6 +41,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 /**
  * 全局 Bean 装配中心。
@@ -217,6 +218,23 @@ public class AppConfig {
     }
 
     // ==================== 业务装配 ====================
+
+    // ==================== 异步任务 ====================
+
+    /**
+     * 长期记忆持久化专用线程池：{@code @Async("ltmTaskExecutor")} 的 saveChat 在此执行，
+     * 避免 embedding + 向量入库阻塞对话输出。
+     */
+    @Bean
+    public ThreadPoolTaskExecutor ltmTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(500);
+        executor.setThreadNamePrefix("ltm-persist-");
+        executor.initialize();
+        return executor;
+    }
 
     @Bean
     public VectorMemoryStore vectorMemoryStore(

@@ -10,6 +10,13 @@ spring:
       max-request-size: ${APP_MAX_REQUEST_SIZE:60MB}
       file-size-threshold: 2MB
 
+  http:
+    client:
+      # HTTP 客户端超时：qwen3.8-max 处理大图/复杂问题时思考耗时可达数分钟，
+      # 默认 10 秒读超时会导致大图请求 ReadTimeout，需放宽（毫秒）
+      connect-timeout: ${APP_HTTP_CONNECT_TIMEOUT:60000}
+      read-timeout: ${APP_HTTP_READ_TIMEOUT:300000}
+
   autoconfigure:
     exclude:
       - org.springframework.ai.autoconfigure.vectorstore.milvus.MilvusVectorStoreAutoConfiguration
@@ -73,6 +80,12 @@ app:
     # 附件注册表存储: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
     registry:
       type: ${APP_ATTACHMENT_REGISTRY_TYPE:local}
+    # 图片直传前压缩：降低输入 token 与模型推理耗时（默认最长边 1024，JPEG 质量 0.85）
+    image:
+      # 最长边像素上限，超过则等比缩小；设 0 表示不压缩
+      max-dimension: ${APP_ATTACHMENT_IMAGE_MAX_DIMENSION:1024}
+      # JPEG 重编码质量（0~1），带透明通道的图保持 PNG 编码
+      jpeg-quality: ${APP_ATTACHMENT_IMAGE_JPEG_QUALITY:0.85}
   memory:
     # 短期记忆（STM）存储: local(默认) | redis
     stm:
@@ -90,6 +103,13 @@ app:
       similarity-threshold: ${APP_MEMORY_VECTOR_SIMILARITY_THRESHOLD:0.2}
     # 会话记忆检索工具二次过滤阈值：低于该分数的片段丢弃
     min-score: ${APP_MEMORY_MIN_SCORE:0.35}
+  stream:
+    # 流式接口（POST /api/agent/chat/stream）专属配置
+    # 是否显式请求模型开启思考（DashScope 兼容模式 enable_thinking），开启后 SSE 会推送 reasoning 事件；
+    # 若模型默认输出思考则无需开启
+    enable-thinking: ${APP_STREAM_ENABLE_THINKING:false}
+    # OpenAI 兼容补全接口路径
+    completions-path: /v1/chat/completions
   rag:
     # 文档知识库检索工具二次过滤阈值：低于该分数的片段丢弃
     min-score: ${APP_RAG_MIN_SCORE:0.35}

@@ -99,6 +99,8 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 | --- | --- | --- |
 | POST | `/api/agent/chat` | 对话，body: `{"question":"...", "sessionId":"...", "attachments":[{...}]}`（附作为 base64/URL） |
 | POST | `/api/agent/chat/multipart` | 对话（multipart），字段 `question`、`sessionId`、`files`（直接上传文件） |
+| POST | `/api/agent/chat/stream` | 流式对话（SSE），事件：`start`/`reasoning`/`tool_call`/`tool_result`/`content`/`error`/`done`；记忆行为与 `/chat` 一致 |
+| POST | `/api/agent/chat/stream/multipart` | 流式对话（multipart），同上 |
 | GET | `/api/agent/tools` | 可用工具列表 |
 | GET | `/api/agent/session/{sessionId}` | 会话统计（token 累积、轮次、模型） |
 | GET | `/api/agent/memory/{sessionId}` | 会话长期记忆（摘要 + 事实） |
@@ -148,6 +150,7 @@ app:
 | 视觉描述服务地址 | `APP_RAG_VISION_BASE_URL`（`app.rag.vision.base-url`） | DashScope 默认 |
 | PDF 渲染 DPI | `APP_RAG_VISION_PDF_DPI`（`app.rag.vision.pdf-dpi`） | `150` |
 | 文档解析缓存类型 | `APP_RAG_CACHE_TYPE`（`app.rag.cache.type`） | `local`（`local`/`redis`） |
+| 流式思考开关 | `APP_STREAM_ENABLE_THINKING`（`app.stream.enable-thinking`） | `false` |
 | 文档解析缓存 TTL | `APP_RAG_CACHE_PARSE_TTL_HOURS`（`app.rag.cache.parse-ttl-hours`） | `24` |
 | 附件注册表类型 | `APP_ATTACHMENT_REGISTRY_TYPE`（`app.attachment.registry.type`） | `local`（`local`/`redis`） |
 | 附件存活天数 | `APP_ATTACHMENT_TTL_DAYS`（`app.attachment.ttl-days`） | `7` |
