@@ -1,12 +1,15 @@
 package com.litlebro.agent.common;
 
 /**
- * 系统提示词常量，统一维护 Agent 的提示词。
+ * 系统提示词常量，统一维护 Agent 的全部提示词：
+ * 对话主提示词、上下文压缩、会话摘要前缀、图片视觉描述、工具说明与参数描述。
  */
 public final class SystemPrompt {
 
     private SystemPrompt() {
     }
+
+    // ==================== 对话主提示词 ====================
 
     public static final String GENERAL = """
             你是一个通用智能体，能够通过调用各种工具来获取实时信息或执行操作，帮助用户解决各类问题。
@@ -26,9 +29,12 @@ public final class SystemPrompt {
               应改写为"JSON 响应中 result 对象包含哪些字段"，而非"result 字段"；越完整的描述检索命中率越高
             """;
 
+    // ==================== 上下文压缩 ====================
+
     /**
      * 上下文压缩提示词，对齐 opencode 的结构化模板。
      * 在已有摘要的基础上追加新信息，而非从零总结。
+     * 三个占位符依次为：摘要操作指令、压缩模板、对话历史。
      */
     public static final String COMPACTION_REQUEST = """
             %s
@@ -38,6 +44,14 @@ public final class SystemPrompt {
             %s
             
             请生成更新后的摘要（保留所有仍然有效的细节，删除已过时的信息，合并新事实）:""";
+
+    /** 首次压缩：从对话历史中新建摘要 */
+    public static final String COMPACTION_INITIAL = "从对话历史中创建一个新的摘要。";
+
+    /** 增量压缩：在已有摘要基础上更新，占位符为上一次摘要内容 */
+    public static final String COMPACTION_UPDATE =
+            "将以下已有摘要更新为新的摘要，使用上方对话历史中的新信息。保留仍然有效的细节，删除过时信息，合并新事实。\n"
+                    + "<已有摘要>\n%s\n</已有摘要>";
 
     public static final String COMPACTION_TEMPLATE = """
             Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
@@ -71,4 +85,20 @@ public final class SystemPrompt {
             - 使用简洁的要点，不用段落。
             - 保留确切的文件路径、符号、命令、错误字符串、URL 和标识符。
             - 不要提及摘要过程或上下文已被压缩。""";
+
+    // ==================== 会话摘要前缀 ====================
+
+    /** 压缩后注入 ChatMemory 的摘要前缀，用于标记首条 SystemMessage 为压缩摘要 */
+    public static final String SUMMARY_PREFIX = "之前的对话摘要:\n";
+
+    // ==================== 图片视觉描述 ====================
+
+    /** 视觉描述提示词：要求模型完整理解并描述图片内容（图片型 PDF 页面与上传图片共用） */
+    public static final String VISION_DESCRIBE = """
+            请仔细观察这张图片，用中文详细描述它的内容：
+            1) 图片类型（照片/图表/流程图/表格/扫描文档等）；
+            2) 主要元素与文字信息（若含文字请完整保留）；
+            3) 若为图表，描述坐标轴、数据趋势与关键数值；
+            4) 整体布局结构。
+            只输出描述内容，不要添加任何解释、评论或标记。""";
 }

@@ -1,6 +1,7 @@
 package com.litlebro.agent.context;
 
 import com.litlebro.agent.common.Constant;
+import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
@@ -97,7 +98,7 @@ public class ContextManager {
 
         // 重建上下文：摘要 + 最近 6 条原文
         List<Message> rebuilt = new ArrayList<>();
-        rebuilt.add(new SystemMessage(Constant.SUMMARY_PREFIX + summary));
+        rebuilt.add(new SystemMessage(SystemPrompt.SUMMARY_PREFIX + summary));
         rebuilt.addAll(recentMessages);
 
         chatMemory.clear(sessionId);
@@ -113,8 +114,8 @@ public class ContextManager {
         Message first = messages.get(0);
         if (first.getMessageType() == MessageType.SYSTEM) {
             String text = first.getText();
-            if (text != null && text.startsWith(Constant.SUMMARY_PREFIX)) {
-                return text.substring(Constant.SUMMARY_PREFIX.length());
+            if (text != null && text.startsWith(SystemPrompt.SUMMARY_PREFIX)) {
+                return text.substring(SystemPrompt.SUMMARY_PREFIX.length());
             }
         }
         return null;

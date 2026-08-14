@@ -8,6 +8,7 @@ import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationM
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalMessageItemBase;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalMessageItemImage;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalMessageItemText;
+import com.litlebro.agent.common.SystemPrompt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,15 +33,6 @@ import java.util.Map;
 public class VisionDescribeService {
 
     private static final Logger log = LoggerFactory.getLogger(VisionDescribeService.class);
-
-    /** 视觉描述提示词：要求模型完整理解并描述图片内容 */
-    private static final String DESCRIBE_PROMPT =
-            "请仔细观察这张图片，用中文详细描述它的内容："
-            + "1) 图片类型（照片/图表/流程图/表格/扫描文档等）；"
-            + "2) 主要元素与文字信息（若含文字请完整保留）；"
-            + "3) 若为图表，描述坐标轴、数据趋势与关键数值；"
-            + "4) 整体布局结构。"
-            + "只输出描述内容，不要添加任何解释、评论或标记。";
 
     private final boolean enabled;
     private final String model;
@@ -77,7 +69,7 @@ public class VisionDescribeService {
         }
         try {
             List<MultiModalMessageItemBase> content = new ArrayList<>();
-            content.add(new MultiModalMessageItemText(DESCRIBE_PROMPT));
+            content.add(new MultiModalMessageItemText(SystemPrompt.VISION_DESCRIBE));
             content.add(new MultiModalMessageItemImage(imagePath));
 
             MultiModalConversationMessage message = MultiModalConversationMessage.builder()

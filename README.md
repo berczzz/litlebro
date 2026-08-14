@@ -209,7 +209,7 @@ src/main/java/com/litlebro/agent/
 │   └── DocumentService.java        # 文档入库：解析 → 切块 → 向量化
 ├── common/
 │   ├── Constant.java               # 常量统一管理
-│   └── SystemPrompt.java           # 系统提示词 + 压缩提示词
+│   └── SystemPrompt.java           # 全部提示词（对话/压缩/视觉/工具说明）
 ├── context/                        # 上下文管理
 │   ├── ContextManager.java         # 后置溢出检查 + 压缩触发
 │   ├── CompressionService.java     # 对话历史压缩（增量）
@@ -229,6 +229,7 @@ src/main/java/com/litlebro/agent/
 │   └── external/RedisSessionManager.java # Redis 实现（30 分钟 TTL）
 ├── tool/                           # LLM 可调用工具
 │   ├── AgentTool.java              # 工具抽象接口
+│   ├── ToolDescriptions.java       # 工具说明与参数描述常量
 │   ├── ToolRegistry.java           # 工具注册表
 │   ├── DateTimeTool.java           # 日期时间
 │   ├── SearchMemoryTool.java       # 会话记忆检索（search_memory）

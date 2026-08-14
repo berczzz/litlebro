@@ -2,6 +2,7 @@ package com.litlebro.agent.memory;
 
 import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.common.Constant;
+import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.memory.model.AgentMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -148,7 +149,7 @@ public class LongTermMemoryService {
             AgentMessage summary = vectorMemoryStore.toAgentMessage(summaryDoc);
             String summaryText = summary != null ? summary.text() : summaryDoc.getText();
             if (summaryText != null && !summaryText.isBlank()) {
-                rebuilt.add(new SystemMessage(Constant.SUMMARY_PREFIX + summaryText));
+                rebuilt.add(new SystemMessage(SystemPrompt.SUMMARY_PREFIX + summaryText));
             }
             compactPoint = summary != null ? summary.createdAt() : 0;
         }

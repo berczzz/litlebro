@@ -37,12 +37,12 @@ public class DateTimeTool implements AgentTool {
 
     @Override
     public String name() {
-        return "日期时间工具";
+        return ToolDescriptions.DATE_TIME_NAME;
     }
 
     @Override
     public String description() {
-        return "获取当前时间、判断星期几、计算日期差、日期偏移";
+        return ToolDescriptions.DATE_TIME_DESC;
     }
 
     /** 日期格式化器，统一输出 yyyy-MM-dd 格式 */
@@ -56,7 +56,7 @@ public class DateTimeTool implements AgentTool {
      *
      * @return 格式化的当前日期时间字符串，含时区
      */
-    @Tool(description = "获取当前系统日期和时间，精确到秒，同时返回所在时区")
+    @Tool(description = ToolDescriptions.DATE_TIME_CURRENT_DATETIME)
     public String getCurrentDateTime() {
         return "当前时间: " + LocalDateTime.now().format(DATETIME_FORMATTER)
                 + " (时区: " + ZoneId.systemDefault() + ")";
@@ -68,7 +68,7 @@ public class DateTimeTool implements AgentTool {
      *
      * @return 格式化的当前日期字符串
      */
-    @Tool(description = "获取当前系统日期，不含时间部分")
+    @Tool(description = ToolDescriptions.DATE_TIME_CURRENT_DATE)
     public String getCurrentDate() {
         return "当前日期: " + LocalDate.now().format(DATE_FORMATTER);
     }
@@ -80,9 +80,9 @@ public class DateTimeTool implements AgentTool {
      * @param dateStr 日期字符串，格式必须为 yyyy-MM-dd
      * @return 中文星期名称，如 "2026-08-11 是 星期二"
      */
-    @Tool(description = "根据给定的日期字符串，判断该日期是星期几")
+    @Tool(description = ToolDescriptions.DATE_TIME_DAY_OF_WEEK)
     public String getDayOfWeek(
-            @ToolParam(description = "日期字符串，格式为 yyyy-MM-dd，例如 2026-08-11") String dateStr) {
+            @ToolParam(description = ToolDescriptions.DATE_TIME_DAY_OF_WEEK_PARAM) String dateStr) {
         try {
             LocalDate date = LocalDate.parse(dateStr, DATE_FORMATTER);
             DayOfWeek dayOfWeek = date.getDayOfWeek();
@@ -110,10 +110,10 @@ public class DateTimeTool implements AgentTool {
      * @param dateStr2 第二个日期，格式 yyyy-MM-dd
      * @return 两个日期相差的天数
      */
-    @Tool(description = "计算两个日期之间相差的天数，返回绝对值")
+    @Tool(description = ToolDescriptions.DATE_TIME_DAYS_BETWEEN)
     public String daysBetween(
-            @ToolParam(description = "第一个日期，格式 yyyy-MM-dd") String dateStr1,
-            @ToolParam(description = "第二个日期，格式 yyyy-MM-dd") String dateStr2) {
+            @ToolParam(description = ToolDescriptions.DATE_TIME_DATE_PARAM) String dateStr1,
+            @ToolParam(description = ToolDescriptions.DATE_TIME_DATE2_PARAM) String dateStr2) {
         try {
             LocalDate d1 = LocalDate.parse(dateStr1, DATE_FORMATTER);
             LocalDate d2 = LocalDate.parse(dateStr2, DATE_FORMATTER);
@@ -133,10 +133,10 @@ public class DateTimeTool implements AgentTool {
      * @param days    偏移天数，正数表示未来，负数表示过去
      * @return 偏移后的日期字符串
      */
-    @Tool(description = "根据给定的日期和偏移天数，计算偏移后的日期。正数表示未来，负数表示过去")
+    @Tool(description = ToolDescriptions.DATE_TIME_ADD_DAYS)
     public String addDays(
-            @ToolParam(description = "基准日期，格式 yyyy-MM-dd") String dateStr,
-            @ToolParam(description = "偏移天数，正数表示未来，负数表示过去") int days) {
+            @ToolParam(description = ToolDescriptions.DATE_TIME_ADD_DAYS_DATE_PARAM) String dateStr,
+            @ToolParam(description = ToolDescriptions.DATE_TIME_ADD_DAYS_DAYS_PARAM) int days) {
         try {
             LocalDate date = LocalDate.parse(dateStr, DATE_FORMATTER);
             LocalDate result = date.plusDays(days);

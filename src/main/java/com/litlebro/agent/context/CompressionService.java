@@ -50,8 +50,8 @@ public class CompressionService {
         }
 
         String previousSection = (previousSummary != null && !previousSummary.isBlank())
-                ? "将以下已有摘要更新为新的摘要，使用上方对话历史中的新信息。保留仍然有效的细节，删除过时信息，合并新事实。\n<已有摘要>\n" + previousSummary + "\n</已有摘要>"
-                : "从对话历史中创建一个新的摘要。";
+                ? SystemPrompt.COMPACTION_UPDATE.formatted(previousSummary)
+                : SystemPrompt.COMPACTION_INITIAL;
 
         String prompt = SystemPrompt.COMPACTION_REQUEST.formatted(
                 previousSection,

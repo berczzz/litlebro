@@ -28,8 +28,6 @@ public final class Constant {
     public static final String MD_DOC_ID = "docId";
 
     // ==================== 摘要 ====================
-    /** 回注 ChatMemory 的摘要 SystemMessage 前缀 */
-    public static final String SUMMARY_PREFIX = "之前的对话摘要:\n";
     /** 上下文压缩摘要文本存储于元数据的键 */
     public static final String SUMMARY_COST = "cost";
 

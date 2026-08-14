@@ -30,10 +30,10 @@ public abstract class AbstractSessionManager implements SessionManager {
                 sessionId,
                 old.parentId(),
                 mergedModel,
-                old.totalUseTokens() + promptTokens,
+                old.totalUseTokens() + promptTokens + completionTokens,
                 old.totalCompletionTokens() + completionTokens,
                 old.totalPromptTokens() + promptTokens,
-                old.curUseTokens() + promptTokens,
+                old.curUseTokens() + promptTokens + completionTokens,
                 old.curCompletionTokens() + completionTokens,
                 old.curPromptTokens() + promptTokens,
                 Map.of("turnCount", turnCount)
