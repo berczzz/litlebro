@@ -40,10 +40,13 @@ public class RedisChatMemory implements ChatMemory {
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final MessageCodec messageCodec;
 
-    public RedisChatMemory(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper) {
+    public RedisChatMemory(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper,
+                           MessageCodec messageCodec) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.messageCodec = messageCodec;
     }
 
     /**
@@ -60,7 +63,7 @@ public class RedisChatMemory implements ChatMemory {
         }
         String key = KEY_PREFIX + conversationId;
         List<AgentMessage> existing = getAgentMessages(conversationId);
-        existing.addAll(MessageCodec.toAgentMessages(messages, conversationId));
+        existing.addAll(messageCodec.toAgentMessages(messages, conversationId));
         try {
             redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(existing), TTL_MINUTES, TimeUnit.MINUTES);
         } catch (Exception e) {
@@ -87,7 +90,7 @@ public class RedisChatMemory implements ChatMemory {
             // 截取最后 lastN 条消息，控制上下文长度
             sub = new ArrayList<>(all.subList(size - lastN, size));
         }
-        return MessageCodec.toMessages(sub);
+        return messageCodec.toMessages(sub);
     }
 
     /**

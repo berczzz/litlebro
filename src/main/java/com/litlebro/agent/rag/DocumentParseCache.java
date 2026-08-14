@@ -6,10 +6,10 @@ package com.litlebro.agent.rag;
  * <p>重复上传同一文件时直接命中缓存、跳过解析过程，尤其避免图片型文档
  * 重复调用视觉模型浪费 token（视觉描述只在首次上传时执行一次）。
  *
- * <p>存储后端由配置 {@code app.rag.cache.type} 决定（见 {@code MemoryConfig}）：
+ * <p>存储后端由配置 {@code app.rag.cache.type} 决定（见 {@code config.AppConfig}）：
  * {@code local} 加载 {@code rag.local.LocalDocumentParseCache}（本地内存），
  * {@code redis} 加载 {@code rag.external.RedisDocumentParseCache}（Redis + TTL）。
- * 新增存储实现只需实现本接口并在 {@code MemoryConfig} 中按配置装配。
+ * 新增存储实现只需实现本接口并在 {@code config.AppConfig} 中按配置装配。
  */
 public interface DocumentParseCache {
 

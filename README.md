@@ -2,7 +2,7 @@
 
 # litlebro — 小老弟
 
-一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 演示项目。通过 ChatClient 调用 OpenAI 兼容的 LLM，实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**和**可插拔的工具调用机制**。
+一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 项目。通过 ChatClient 调用 OpenAI 兼容的 LLM，实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**和**可插拔的工具调用机制**。
 
 ## 特性
 
@@ -14,8 +14,9 @@
   - LLM 调用后置检查 token 占用，超阈值（模型窗口 75%）自动触发增量压缩
   - 保留最近 6 条消息原文，更早的历史压缩为摘要存入长期记忆
   - 压缩时传入旧摘要做增量，不重复压缩同一段历史
-- **可插拔工具**：日期时间、会话记忆检索、文档知识库检索，LLM 按需自动调用
+- **可插拔工具**：日期时间、会话记忆检索、文档知识库检索、附件读取/检索，LLM 按需自动调用
 - **RAG 文档知识库**：上传 txt/md/json/pdf/docx/xlsx/xls/图片 → 语义/固定切块 → 向量化，LLM 按需检索
+- **附件直传**：对话时可直接携带文件（base64 / URL / multipart），文档类附件懒解析后由 LLM 用工具读取，到期自动清理
 - **两级检索过滤**：向量库宽召回（低阈值）+ 工具层相似度二次过滤（去噪）
 - **存储模式可切换**：内存实现（默认，开箱即用）/ Redis + Milvus 外部实现
 - **Token 统计**：以模型返回的 usage 为准，按会话累积统计
@@ -96,7 +97,8 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/agent/chat` | 对话，body: `{"question":"...", "sessionId":"..."}` |
+| POST | `/api/agent/chat` | 对话，body: `{"question":"...", "sessionId":"...", "attachments":[{...}]}`（附作为 base64/URL） |
+| POST | `/api/agent/chat/multipart` | 对话（multipart），字段 `question`、`sessionId`、`files`（直接上传文件） |
 | GET | `/api/agent/tools` | 可用工具列表 |
 | GET | `/api/agent/session/{sessionId}` | 会话统计（token 累积、轮次、模型） |
 | GET | `/api/agent/memory/{sessionId}` | 会话长期记忆（摘要 + 事实） |
@@ -112,6 +114,8 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 | 短期（ChatMemory） | `app.memory.stm.type` | `InMemoryChatMemory`（`local`） | `RedisChatMemory`（`redis`，30 分钟 TTL） |
 | 长期（VectorStore） | `app.memory.ltm.type` | `SimpleVectorStore`（`local`） | `MilvusVectorStore`（`milvus`） |
 | 会话状态（SessionManager） | `app.memory.stm.type` | `LocalSessionManager`（`local`） | `RedisSessionManager`（`redis`，30 分钟 TTL） |
+| 文档解析缓存 | `app.rag.cache.type` | `LocalDocumentParseCache`（`local`） | `RedisDocumentParseCache`（`redis`，24h TTL） |
+| 附件注册表 | `app.attachment.registry.type` | `LocalAttachmentRegistry`（`local`，重启丢失） | `RedisAttachmentRegistry`（`redis`，TTL 对齐附件过期） |
 
 **记忆按 sessionId 隔离**，每个会话有独立记忆空间。
 
@@ -145,6 +149,8 @@ app:
 | PDF 渲染 DPI | `APP_RAG_VISION_PDF_DPI`（`app.rag.vision.pdf-dpi`） | `150` |
 | 文档解析缓存类型 | `APP_RAG_CACHE_TYPE`（`app.rag.cache.type`） | `local`（`local`/`redis`） |
 | 文档解析缓存 TTL | `APP_RAG_CACHE_PARSE_TTL_HOURS`（`app.rag.cache.parse-ttl-hours`） | `24` |
+| 附件注册表类型 | `APP_ATTACHMENT_REGISTRY_TYPE`（`app.attachment.registry.type`） | `local`（`local`/`redis`） |
+| 附件存活天数 | `APP_ATTACHMENT_TTL_DAYS`（`app.attachment.ttl-days`） | `7` |
 | Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
 | Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
 
@@ -184,6 +190,18 @@ app:
    或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
 - 语义切块复用对话同一个 embedding 模型，保证切块/检索/对话向量空间一致
 
+## 附件直传
+
+对话时可携带文件附件，由 LLM 按需读取内容：
+
+- **三种来源**：JSON `attachments`（base64 / URL）、`POST /api/agent/chat/multipart`（multipart `files`）
+- **图片**：直接转为多模态 Media 随对话传模型，不落盘
+- **文档/文本**：落盘登记 fileId，写入系统提示词告知 LLM 用 `read_file` / `grep_file` 工具读取；PDF/Word/Excel 懒解析为纯文本
+- **懒解析**：首次被工具读取时才解析（复用 `DocumentParserFactory`），解析结果 txt 与源文件一同落盘缓存
+- **会话隔离**：附件归属创建它的 sessionId，工具按 fileId 校验归属后才允许读取
+- **自动清理**：定时任务（默认每小时）扫描注册表，删除过期（默认 7 天）的原文件 + 懒解析 txt
+- **注册表可切换**：`app.attachment.registry.type` 为 `local`（默认，内存）/ `redis`（Redis + TTL，重启不丢），与其余存储配置互不影响
+
 ## 工具调用
 
 内置工具（`com.litlebro.agent.tool`），LLM 会根据问题自动选择：
@@ -193,6 +211,8 @@ app:
 | `DateTimeTool` | `getCurrentDate` 等 | 获取当前日期/时间、日期计算 |
 | `SearchMemoryTool` | `search_memory` | 检索当前会话历史记忆（按 sessionId 隔离） |
 | `SearchDocumentTool` | `search_document` | 检索全局文档知识库 |
+| `ReadFileTool` | `read_file` | 读取附件文本内容（按 fileId 按行读取） |
+| `GrepFileTool` | `grep_file` | 在附件中检索关键词所在行 |
 
 新增工具只需实现 `AgentTool` 接口并在 `ToolRegistry` 注册。
 
@@ -210,12 +230,14 @@ src/main/java/com/litlebro/agent/
 ├── common/
 │   ├── Constant.java               # 常量统一管理
 │   └── SystemPrompt.java           # 全部提示词（对话/压缩/视觉/工具说明）
+├── config/
+│   └── AppConfig.java              # 全局 Bean 装配中心（STM/LTM/会话/rag 缓存/附件/业务）
 ├── context/                        # 上下文管理
 │   ├── ContextManager.java         # 后置溢出检查 + 压缩触发
 │   ├── CompressionService.java     # 对话历史压缩（增量）
 │   └── SessionContextHolder.java   # ThreadLocal 会话上下文（工具内取 sessionId）
 ├── memory/                         # 记忆模块
-│   ├── MemoryConfig.java           # 装配中心
+│   ├── MessageCodec.java           # 对话消息与 AgentMessage 互转（组件）
 │   ├── MemoryStore.java            # 长期记忆存储抽象接口
 │   ├── VectorMemoryStore.java      # 向量记忆存储封装
 │   ├── LongTermMemoryService.java  # 长期记忆业务
@@ -229,11 +251,27 @@ src/main/java/com/litlebro/agent/
 │   └── external/RedisSessionManager.java # Redis 实现（30 分钟 TTL）
 ├── tool/                           # LLM 可调用工具
 │   ├── AgentTool.java              # 工具抽象接口
-│   ├── ToolDescriptions.java       # 工具说明与参数描述常量
 │   ├── ToolRegistry.java           # 工具注册表
 │   ├── DateTimeTool.java           # 日期时间
 │   ├── SearchMemoryTool.java       # 会话记忆检索（search_memory）
-│   └── SearchDocumentTool.java     # 文档知识库检索（search_document）
+│   ├── SearchDocumentTool.java     # 文档知识库检索（search_document）
+│   ├── ReadFileTool.java           # 附件读取（read_file）
+│   └── GrepFileTool.java           # 附件检索（grep_file）
+├── attachment/                     # 附件直传模块
+│   ├── AttachmentEntry.java        # 附件条目（fileId/归属/路径/过期）
+│   ├── AttachmentRegistry.java     # 附件注册表抽象接口
+│   ├── AttachmentStore.java        # 落盘/懒解析/删除/清理
+│   ├── AttachmentCleanupTask.java  # 定时清理任务（@Scheduled）
+│   ├── local/LocalAttachmentRegistry.java   # 注册表本地内存实现（默认）
+│   ├── external/RedisAttachmentRegistry.java # 注册表 Redis 实现（TTL，重启不丢）
+│   └── resolver/                   # 附件来源解析策略（base64/url/multipart）
+│       ├── AttachmentResolver.java          # 解析策略接口
+│       ├── AttachmentResolverFactory.java   # 解析策略工厂
+│       ├── AttachmentInput.java             # 附件来源输入
+│       ├── ResolvedAttachment.java          # 统一字节形态
+│       ├── Base64AttachmentResolver.java
+│       ├── UrlAttachmentResolver.java
+│       └── MultipartAttachmentResolver.java
 ├── rag/                           # 文档处理核心
 │   ├── DocumentParseCache.java    # 解析缓存抽象接口（文件哈希→文本）
 │   ├── local/LocalDocumentParseCache.java # 解析缓存本地内存实现（默认）

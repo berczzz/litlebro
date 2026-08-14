@@ -13,7 +13,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * 会话记忆检索工具，供 LLM 在对话中按需检索当前会话的历史记忆。
@@ -42,12 +41,12 @@ public class SearchMemoryTool implements AgentTool {
 
     @Override
     public String name() {
-        return ToolDescriptions.SEARCH_MEMORY_NAME;
+        return "会话记忆检索";
     }
 
     @Override
     public String description() {
-        return ToolDescriptions.SEARCH_MEMORY_DESC;
+        return "检索当前会话的历史记忆，当用户询问此前对话内容或想回忆本会话聊过什么时使用";
     }
 
     /**
@@ -56,9 +55,9 @@ public class SearchMemoryTool implements AgentTool {
      * @param query 检索词，描述想查找的记忆内容
      * @return 命中的记忆片段文本，无结果时返回提示语
      */
-    @Tool(name = "search_memory", description = ToolDescriptions.SEARCH_MEMORY_TOOL)
+    @Tool(name = "search_memory", description = "检索当前会话的历史记忆，返回与本会话相关的过往对话内容。当用户询问此前聊过什么、做过什么决定时调用")
     public String searchMemory(
-            @ToolParam(description = ToolDescriptions.SEARCH_MEMORY_PARAM) String query) {
+            @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词") String query) {
         String sessionId = SessionContextHolder.get();
         log.info("searchMemory执行开始：{}，sessionId：{}", query, sessionId);
         if (sessionId == null || sessionId.isBlank()) {

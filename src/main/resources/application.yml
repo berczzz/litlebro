@@ -59,6 +59,20 @@ spring:
           max-wait: 3000ms
 
 app:
+  attachment:
+    # 附件落盘根目录（相对项目根或绝对路径均可）
+    dir: ${APP_ATTACHMENT_DIR:./data/attachments}
+    # 附件存活天数，到期由定时任务清理（原文件 + 懒解析 txt）
+    ttl-days: ${APP_ATTACHMENT_TTL_DAYS:7}
+    # 清理任务执行间隔（毫秒），默认 1 小时
+    cleanup-interval-ms: ${APP_ATTACHMENT_CLEANUP_INTERVAL_MS:3600000}
+    # 单附件大小上限（字节）
+    max-size: ${APP_ATTACHMENT_MAX_SIZE:20971520}
+    # grep_file 默认最多返回的匹配行数
+    max-lines: ${APP_ATTACHMENT_MAX_LINES:100}
+    # 附件注册表存储: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
+    registry:
+      type: ${APP_ATTACHMENT_REGISTRY_TYPE:local}
   memory:
     # 短期记忆（STM）存储: local(默认) | redis
     stm:

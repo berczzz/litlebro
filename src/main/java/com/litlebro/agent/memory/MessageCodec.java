@@ -1,10 +1,14 @@
 package com.litlebro.agent.memory;
 
+import com.litlebro.agent.attachment.AttachmentStore;
+import com.litlebro.agent.attachment.resolver.ResolvedAttachment;
 import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.memory.model.AgentMessage;
 import com.litlebro.agent.memory.model.AgentMessage.MediaData;
 import com.litlebro.agent.memory.model.AgentMessage.ToolCallData;
 import com.litlebro.agent.memory.model.AgentMessage.ToolResponseData;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -13,12 +17,14 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.model.Media;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.stereotype.Component;
 import org.springframework.util.MimeType;
 
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -33,15 +39,26 @@ import java.util.UUID;
  *   <li>ToolResponseMessage → responses + metadata</li>
  * </ul>
  *
- * <p>media 的 data 有两种形态：URL 存 {@code url}，字节/Resource 转 base64 存 {@code base64}，
- * 还原时通过 {@link Media} 对应的构造器重建，与 Spring AI 内部形态兼容。
+ * <p>media 的 data 有三种形态：
+ * <ul>
+ *   <li>{@code url} — 远程 URL，还原时按 URL 重建</li>
+ *   <li>{@code base64} — 字节内容，还原时解码重建</li>
+ *   <li>{@code fileId} — 已落盘附件（图片直传后由本类写路径自动落盘），
+ *       还原时经 {@link AttachmentStore} 读盘重建，短记忆只存 fileId 不存 base64，避免撑大存储</li>
+ * </ul>
  */
-public final class MessageCodec {
+@Component
+public class MessageCodec {
 
-    private MessageCodec() {
+    private static final Logger log = LoggerFactory.getLogger(MessageCodec.class);
+
+    private final AttachmentStore attachmentStore;
+
+    public MessageCodec(AttachmentStore attachmentStore) {
+        this.attachmentStore = attachmentStore;
     }
 
-    public static List<AgentMessage> toAgentMessages(List<Message> messages, String sessionId) {
+    public List<AgentMessage> toAgentMessages(List<Message> messages, String sessionId) {
         List<AgentMessage> result = new ArrayList<>();
         if (messages == null) {
             return result;
@@ -55,7 +72,7 @@ public final class MessageCodec {
         return result;
     }
 
-    public static AgentMessage toAgentMessage(Message message, String sessionId) {
+    public AgentMessage toAgentMessage(Message message, String sessionId) {
         if (message == null) {
             return null;
         }
@@ -68,12 +85,12 @@ public final class MessageCodec {
         if (message instanceof UserMessage um) {
             return new AgentMessage(
                     id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
-                    text, metadata, toMediaData(um.getMedia()), List.of(), List.of(), now);
+                    text, metadata, toMediaData(um.getMedia(), sessionId), List.of(), List.of(), now);
         }
         if (message instanceof AssistantMessage am) {
             return new AgentMessage(
                     id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
-                    text, metadata, toMediaData(am.getMedia()), toToolCallData(am.getToolCalls()), List.of(), now);
+                    text, metadata, toMediaData(am.getMedia(), sessionId), toToolCallData(am.getToolCalls()), List.of(), now);
         }
         if (message instanceof ToolResponseMessage trm) {
             List<ToolResponseData> responses = new ArrayList<>();
@@ -92,7 +109,7 @@ public final class MessageCodec {
                 text, metadata, List.of(), List.of(), List.of(), now);
     }
 
-    public static List<Message> toMessages(List<AgentMessage> agentMessages) {
+    public List<Message> toMessages(List<AgentMessage> agentMessages) {
         List<Message> result = new ArrayList<>();
         if (agentMessages == null) {
             return result;
@@ -106,7 +123,7 @@ public final class MessageCodec {
         return result;
     }
 
-    public static Message toMessage(AgentMessage am) {
+    public Message toMessage(AgentMessage am) {
         if (am == null) {
             return null;
         }
@@ -130,7 +147,11 @@ public final class MessageCodec {
         return new SystemMessage(am.text());
     }
 
-    private static List<MediaData> toMediaData(List<Media> media) {
+    /**
+     * 写路径：Spring AI Media → 统一 MediaData。
+     * URL 保持 url；字节媒体先落盘为附件（fileId），短记忆只存 fileId。
+     */
+    private List<MediaData> toMediaData(List<Media> media, String sessionId) {
         if (media == null) {
             return List.of();
         }
@@ -140,11 +161,20 @@ public final class MessageCodec {
             Object data = m.getData();
             if (data instanceof String url && looksLikeUrl(url)) {
                 result.add(new MediaData(mimeType, url, "url"));
-            } else {
+                continue;
+            }
+            try {
+                byte[] bytes = m.getDataAsByteArray();
+                String fileId = attachmentStore.store(sessionId, new ResolvedAttachment(
+                        "media-" + UUID.randomUUID().toString().replace("-", "") + extensionOf(mimeType),
+                        mimeType, bytes));
+                result.add(new MediaData(mimeType, fileId, "fileId"));
+            } catch (Exception e) {
+                log.warn("媒体落盘为附件失败，退回 base64 存储 原因: {}", e.getMessage());
                 try {
                     byte[] bytes = m.getDataAsByteArray();
                     result.add(new MediaData(mimeType, Base64.getEncoder().encodeToString(bytes), "base64"));
-                } catch (Exception e) {
+                } catch (Exception ignored) {
                     // 字节读取失败则跳过该媒体
                 }
             }
@@ -152,7 +182,11 @@ public final class MessageCodec {
         return result;
     }
 
-    private static List<Media> toMedia(List<MediaData> mediaData) {
+    /**
+     * 读路径：统一 MediaData → Spring AI Media。
+     * fileId 经附件存储读盘重建字节。
+     */
+    private List<Media> toMedia(List<MediaData> mediaData) {
         if (mediaData == null) {
             return List.of();
         }
@@ -162,18 +196,23 @@ public final class MessageCodec {
                 MimeType mimeType = md.mimeType() != null ? MimeType.valueOf(md.mimeType()) : MimeType.valueOf("application/octet-stream");
                 if ("url".equals(md.dataType()) && md.data() != null) {
                     result.add(new Media(mimeType, new URL(md.data())));
+                } else if ("fileId".equals(md.dataType()) && md.data() != null) {
+                    byte[] bytes = attachmentStore.readBytes(md.data());
+                    if (bytes != null) {
+                        result.add(new Media(mimeType, new ByteArrayResource(bytes)));
+                    }
                 } else if (md.data() != null) {
                     byte[] bytes = Base64.getDecoder().decode(md.data());
                     result.add(new Media(mimeType, new ByteArrayResource(bytes)));
                 }
             } catch (Exception e) {
-                // 单个媒体还原失败不影响整体
+                log.warn("单个媒体还原失败 dataType={} 原因: {}", md.dataType(), e.getMessage());
             }
         }
         return result;
     }
 
-    private static List<ToolCallData> toToolCallData(List<AssistantMessage.ToolCall> toolCalls) {
+    private List<ToolCallData> toToolCallData(List<AssistantMessage.ToolCall> toolCalls) {
         if (toolCalls == null) {
             return List.of();
         }
@@ -184,7 +223,7 @@ public final class MessageCodec {
         return result;
     }
 
-    private static List<AssistantMessage.ToolCall> toToolCall(List<ToolCallData> toolCalls) {
+    private List<AssistantMessage.ToolCall> toToolCall(List<ToolCallData> toolCalls) {
         if (toolCalls == null) {
             return List.of();
         }
@@ -195,7 +234,24 @@ public final class MessageCodec {
         return result;
     }
 
-    private static boolean looksLikeUrl(String s) {
+    private boolean looksLikeUrl(String s) {
         return s != null && (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:"));
+    }
+
+    private String extensionOf(String mimeType) {
+        if (mimeType == null) {
+            return "";
+        }
+        String m = mimeType.toLowerCase(Locale.ROOT);
+        if (m.startsWith("image/png")) return ".png";
+        if (m.startsWith("image/jpeg") || m.startsWith("image/jpg")) return ".jpg";
+        if (m.startsWith("image/gif")) return ".gif";
+        if (m.startsWith("image/webp")) return ".webp";
+        if (m.startsWith("image/bmp")) return ".bmp";
+        if (m.startsWith("application/pdf")) return ".pdf";
+        if (m.startsWith("text/plain")) return ".txt";
+        if (m.startsWith("text/markdown")) return ".md";
+        if (m.startsWith("application/json")) return ".json";
+        return ".bin";
     }
 }

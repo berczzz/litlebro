@@ -1,8 +1,14 @@
-package com.litlebro.agent.memory;
+package com.litlebro.agent.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.litlebro.agent.attachment.AttachmentRegistry;
+import com.litlebro.agent.attachment.external.RedisAttachmentRegistry;
+import com.litlebro.agent.attachment.local.LocalAttachmentRegistry;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
+import com.litlebro.agent.memory.LongTermMemoryService;
+import com.litlebro.agent.memory.MessageCodec;
+import com.litlebro.agent.memory.VectorMemoryStore;
 import com.litlebro.agent.memory.external.RedisChatMemory;
 import com.litlebro.agent.rag.DocumentParseCache;
 import com.litlebro.agent.rag.DocumentSplitterFactory;
@@ -34,19 +40,23 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
- * 记忆模块装配中心。
+ * 全局 Bean 装配中心。
  *
- * <p>短期记忆（STM）与长期记忆（LTM）各自独立配置，互不影响：
+ * <p>统一管理各存储后端与业务组件的装配，各存储后端由独立配置项切换，互不影响：
  * <ul>
- *   <li>{@code app.memory.stm.type} — 短期记忆存储，可选 {@code local}（默认）/ {@code redis}</li>
- *   <li>{@code app.memory.ltm.type} — 长期记忆存储，可选 {@code local}（默认）/ {@code milvus}</li>
+ *   <li>短期记忆（STM）{@code app.memory.stm.type}：{@code local}（默认）/ {@code redis}</li>
+ *   <li>长期记忆（LTM）{@code app.memory.ltm.type}：{@code local}（默认）/ {@code milvus}</li>
+ *   <li>文档解析缓存 {@code app.rag.cache.type}：{@code local}（默认）/ {@code redis}</li>
+ *   <li>附件注册表 {@code app.attachment.registry.type}：{@code local}（默认）/ {@code redis}</li>
  * </ul>
  */
 @Configuration
 @EnableAsync
-public class MemoryConfig {
+@EnableScheduling
+public class AppConfig {
 
     // ==================== 短期记忆（STM）====================
 
@@ -72,8 +82,9 @@ public class MemoryConfig {
 
     @Bean
     @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "redis")
-    public ChatMemory redisChatMemory(RedisTemplate<String, Object> stmRedisTemplate, ObjectMapper objectMapper) {
-        return new RedisChatMemory(stmRedisTemplate, objectMapper);
+    public ChatMemory redisChatMemory(RedisTemplate<String, Object> stmRedisTemplate, ObjectMapper objectMapper,
+                                      MessageCodec messageCodec) {
+        return new RedisChatMemory(stmRedisTemplate, objectMapper, messageCodec);
     }
 
     // ==================== 长期记忆（LTM）====================
@@ -170,6 +181,41 @@ public class MemoryConfig {
         return new RedisDocumentParseCache(ragCacheRedisTemplate, ttlHours);
     }
 
+    // ==================== 附件注册表 ====================
+
+    /**
+     * 附件注册表存储由 {@code app.attachment.registry.type} 显式决定：
+     * {@code redis} 时写入 Redis（TTL 与附件过期时间对齐），重启不丢；
+     * {@code local}（默认）时写入本地内存，重启丢失。与短期记忆配置互不影响。
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "redis")
+    public RedisTemplate<String, Object> attachmentRegistryRedisTemplate(RedisConnectionFactory connectionFactory) {
+        RedisTemplate<String, Object> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(new StringRedisSerializer());
+        template.setHashKeySerializer(new StringRedisSerializer());
+        // 值统一存 JSON 字符串：附件条目以 JSON 存储，索引集合存 fileId 字符串
+        template.setValueSerializer(new StringRedisSerializer());
+        template.setHashValueSerializer(new StringRedisSerializer());
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "local", matchIfMissing = true)
+    public AttachmentRegistry localAttachmentRegistry() {
+        return new LocalAttachmentRegistry();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "redis")
+    public AttachmentRegistry redisAttachmentRegistry(
+            @Qualifier("attachmentRegistryRedisTemplate") RedisTemplate<String, Object> attachmentRegistryRedisTemplate,
+            ObjectMapper objectMapper) {
+        return new RedisAttachmentRegistry(attachmentRegistryRedisTemplate, objectMapper);
+    }
+
     // ==================== 业务装配 ====================
 
     @Bean
@@ -209,8 +255,8 @@ public class MemoryConfig {
     }
 
     @Bean
-    public LongTermMemoryService longTermMemoryService(VectorMemoryStore vectorMemoryStore) {
-        return new LongTermMemoryService(vectorMemoryStore);
+    public LongTermMemoryService longTermMemoryService(VectorMemoryStore vectorMemoryStore, MessageCodec messageCodec) {
+        return new LongTermMemoryService(vectorMemoryStore, messageCodec);
     }
 
     @Bean

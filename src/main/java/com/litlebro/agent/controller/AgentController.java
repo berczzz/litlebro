@@ -1,7 +1,9 @@
 package com.litlebro.agent.controller;
 
+import com.litlebro.agent.attachment.resolver.AttachmentInput;
 import com.litlebro.agent.dto.ChatRequest;
 import com.litlebro.agent.dto.ChatResponse;
+import com.litlebro.agent.dto.FileAttachment;
 import com.litlebro.agent.service.AgentService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
@@ -10,8 +12,12 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -19,7 +25,8 @@ import java.util.Map;
  *
  * <p>API 端点：
  * <ul>
- *   <li>POST /api/agent/chat — 核心对话接口</li>
+ *   <li>POST /api/agent/chat — 核心对话接口（JSON，附件 base64/url 来源）</li>
+ *   <li>POST /api/agent/chat/multipart — 核心对话接口（multipart，附件文件上传）</li>
  *   <li>GET /api/agent/tools — 查询可用工具列表</li>
  *   <li>GET /api/agent/session/{sessionId} — 查询会话轮次计数</li>
  *   <li>GET /api/agent/memory/{sessionId} — 查询会话长期记忆</li>
@@ -37,8 +44,36 @@ public class AgentController {
 
     @PostMapping(value = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
-        String answer = agentService.chat(request.question(), request.sessionId());
+        List<AttachmentInput> attachments = toAttachmentInputs(request.attachments());
+        String answer = agentService.chat(request.question(), request.sessionId(), attachments);
         return ChatResponse.of(request.question(), answer, request.sessionId(), null);
+    }
+
+    @PostMapping(value = "/chat/multipart", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public ChatResponse chatMultipart(
+            @RequestPart("question") String question,
+            @RequestPart(value = "sessionId", required = false) String sessionId,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files) {
+        List<AttachmentInput> attachments = new ArrayList<>();
+        if (files != null) {
+            for (MultipartFile file : files) {
+                attachments.add(new AttachmentInput("multipart", null, null, null, file));
+            }
+        }
+        String sid = (sessionId == null || sessionId.isBlank()) ? "default" : sessionId;
+        String answer = agentService.chat(question, sid, attachments);
+        return ChatResponse.of(question, answer, sid, null);
+    }
+
+    private List<AttachmentInput> toAttachmentInputs(List<FileAttachment> fileAttachments) {
+        List<AttachmentInput> result = new ArrayList<>();
+        if (fileAttachments == null) {
+            return result;
+        }
+        for (FileAttachment fa : fileAttachments) {
+            result.add(new AttachmentInput(fa.dataType(), fa.name(), fa.mimeType(), fa.data(), null));
+        }
+        return result;
     }
 
     @GetMapping("/tools")

@@ -33,9 +33,11 @@ public class LongTermMemoryService {
     private static final Logger log = LoggerFactory.getLogger(LongTermMemoryService.class);
 
     private final VectorMemoryStore vectorMemoryStore;
+    private final MessageCodec messageCodec;
 
-    public LongTermMemoryService(VectorMemoryStore vectorMemoryStore) {
+    public LongTermMemoryService(VectorMemoryStore vectorMemoryStore, MessageCodec messageCodec) {
         this.vectorMemoryStore = vectorMemoryStore;
+        this.messageCodec = messageCodec;
     }
 
     public void saveSummary(String sessionId, String summary, int costTokens) {
@@ -160,6 +162,6 @@ public class LongTermMemoryService {
             return Collections.emptyList();
         }
         chatMessages.sort(Comparator.comparingLong(AgentMessage::createdAt));
-        return MessageCodec.toMessages(chatMessages);
+        return messageCodec.toMessages(chatMessages);
     }
 }
