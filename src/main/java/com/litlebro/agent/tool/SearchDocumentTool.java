@@ -43,7 +43,7 @@ public class SearchDocumentTool implements AgentTool {
 
     @Override
     public String description() {
-        return "检索已上传的文档知识库，当用户询问文档内容相关问题（项目文档、说明手册等）时使用";
+        return "检索用户上传的文档知识库，查看上传文件/数据内容时使用";
     }
 
     /**
@@ -52,9 +52,9 @@ public class SearchDocumentTool implements AgentTool {
      * @param query 检索词，描述想查找的文档内容
      * @return 命中的文档片段文本（含来源文件名），无结果时返回提示语
      */
-    @Tool(name = "search_document", description = "检索已上传的文档知识库，返回与检索词相关的文档内容片段及其来源文件名。当用户询问文档/资料内容时调用")
+    @Tool(name = "search_document", description = "检索用户上传的文档知识库（全局共享，不区分会话），返回与检索词相关的文档内容片段及来源文件名。用户上传的报表、文件、数据、资料等全部内容均存储于此；需要查看上传文件数据内容的问题，直接调用本工具")
     public String searchDocument(
-            @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词。例如问'result里有什么字段'应写'JSON 响应中 result 对象包含哪些字段'") String query) {
+            @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词，描述越完整检索命中率越高") String query) {
         log.info("searchDocument执行开始：{}",query);
         List<Document> docs = vectorMemoryStore.searchDocuments(query, TOP_K);
         if (docs == null || docs.isEmpty()) {

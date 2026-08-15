@@ -77,6 +77,10 @@ app:
     max-size: ${APP_ATTACHMENT_MAX_SIZE:20971520}
     # grep_file 默认最多返回的匹配行数
     max-lines: ${APP_ATTACHMENT_MAX_LINES:100}
+    # read_file/grep_file 单次返回的硬上限：行数（防全量读取大文件）
+    tool-max-lines: ${APP_ATTACHMENT_TOOL_MAX_LINES:500}
+    # read_file/grep_file 单次返回的硬上限：字符数（防单次结果撑爆上下文）
+    tool-max-chars: ${APP_ATTACHMENT_TOOL_MAX_CHARS:12000}
     # 附件注册表存储: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
     registry:
       type: ${APP_ATTACHMENT_REGISTRY_TYPE:local}

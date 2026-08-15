@@ -59,17 +59,14 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @EnableScheduling
 public class AppConfig {
 
-    // ==================== 短期记忆（STM）====================
+    // ==================== Redis 公共基础设施 ====================
 
+    /**
+     * 全局共享的 RedisTemplate（String 序列化，值存 JSON 字符串）。
+     * STM / 会话状态 / 文档解析缓存 / 附件注册表 各功能独立切换 local/redis，
+     */
     @Bean
-    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "local", matchIfMissing = true)
-    public ChatMemory inMemoryChatMemory() {
-        return new InMemoryChatMemory();
-    }
-
-    @Bean
-    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "redis")
-    public RedisTemplate<String, Object> stmRedisTemplate(RedisConnectionFactory connectionFactory) {
+    public RedisTemplate<String, Object> appRedisTemplate(RedisConnectionFactory connectionFactory) {
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(connectionFactory);
         template.setKeySerializer(new StringRedisSerializer());
@@ -81,11 +78,19 @@ public class AppConfig {
         return template;
     }
 
+    // ==================== 短期记忆（STM）====================
+
+    @Bean
+    @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "local", matchIfMissing = true)
+    public ChatMemory inMemoryChatMemory() {
+        return new InMemoryChatMemory();
+    }
+
     @Bean
     @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "redis")
-    public ChatMemory redisChatMemory(RedisTemplate<String, Object> stmRedisTemplate, ObjectMapper objectMapper,
-                                      MessageCodec messageCodec) {
-        return new RedisChatMemory(stmRedisTemplate, objectMapper, messageCodec);
+    public ChatMemory redisChatMemory(@Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
+                                      ObjectMapper objectMapper, MessageCodec messageCodec) {
+        return new RedisChatMemory(appRedisTemplate, objectMapper, messageCodec);
     }
 
     // ==================== 长期记忆（LTM）====================
@@ -142,31 +147,12 @@ public class AppConfig {
     @Bean
     @ConditionalOnProperty(name = "app.memory.stm.type", havingValue = "redis")
     public SessionManager redisSessionManager(
-            @Qualifier("stmRedisTemplate") RedisTemplate<String, Object> stmRedisTemplate,
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
             ObjectMapper objectMapper) {
-        return new RedisSessionManager(stmRedisTemplate, objectMapper);
+        return new RedisSessionManager(appRedisTemplate, objectMapper);
     }
 
     // ==================== 文档解析缓存 ====================
-
-    /**
-     * 文档解析缓存存储由 {@code app.rag.cache.type} 显式决定：
-     * {@code redis} 时写入 Redis（TTL {@code app.rag.cache.parse-ttl-hours}），
-     * {@code local}（默认）时写入本地内存。与短期记忆配置互不影响。
-     */
-    @Bean
-    @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "redis")
-    public RedisTemplate<String, Object> ragCacheRedisTemplate(RedisConnectionFactory connectionFactory) {
-        RedisTemplate<String, Object> template = new RedisTemplate<>();
-        template.setConnectionFactory(connectionFactory);
-        template.setKeySerializer(new StringRedisSerializer());
-        template.setHashKeySerializer(new StringRedisSerializer());
-        // 值统一存 JSON 字符串：解析文本直接以字符串存储
-        template.setValueSerializer(new StringRedisSerializer());
-        template.setHashValueSerializer(new StringRedisSerializer());
-        template.afterPropertiesSet();
-        return template;
-    }
 
     @Bean
     @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "local", matchIfMissing = true)
@@ -177,9 +163,9 @@ public class AppConfig {
     @Bean
     @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "redis")
     public DocumentParseCache redisDocumentParseCache(
-            RedisTemplate<String, Object> ragCacheRedisTemplate,
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
             @Value("${app.rag.cache.parse-ttl-hours:24}") long ttlHours) {
-        return new RedisDocumentParseCache(ragCacheRedisTemplate, ttlHours);
+        return new RedisDocumentParseCache(appRedisTemplate, ttlHours);
     }
 
     // ==================== 附件注册表 ====================
@@ -190,20 +176,6 @@ public class AppConfig {
      * {@code local}（默认）时写入本地内存，重启丢失。与短期记忆配置互不影响。
      */
     @Bean
-    @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "redis")
-    public RedisTemplate<String, Object> attachmentRegistryRedisTemplate(RedisConnectionFactory connectionFactory) {
-        RedisTemplate<String, Object> template = new RedisTemplate<>();
-        template.setConnectionFactory(connectionFactory);
-        template.setKeySerializer(new StringRedisSerializer());
-        template.setHashKeySerializer(new StringRedisSerializer());
-        // 值统一存 JSON 字符串：附件条目以 JSON 存储，索引集合存 fileId 字符串
-        template.setValueSerializer(new StringRedisSerializer());
-        template.setHashValueSerializer(new StringRedisSerializer());
-        template.afterPropertiesSet();
-        return template;
-    }
-
-    @Bean
     @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "local", matchIfMissing = true)
     public AttachmentRegistry localAttachmentRegistry() {
         return new LocalAttachmentRegistry();
@@ -212,9 +184,9 @@ public class AppConfig {
     @Bean
     @ConditionalOnProperty(name = "app.attachment.registry.type", havingValue = "redis")
     public AttachmentRegistry redisAttachmentRegistry(
-            @Qualifier("attachmentRegistryRedisTemplate") RedisTemplate<String, Object> attachmentRegistryRedisTemplate,
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
             ObjectMapper objectMapper) {
-        return new RedisAttachmentRegistry(attachmentRegistryRedisTemplate, objectMapper);
+        return new RedisAttachmentRegistry(appRedisTemplate, objectMapper);
     }
 
     // ==================== 业务装配 ====================
@@ -232,6 +204,22 @@ public class AppConfig {
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(500);
         executor.setThreadNamePrefix("ltm-persist-");
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 流式对话专用线程池：{@code @Async("streamExecutor")} 的 streamChat 在此执行。
+     * 每个流式会话会占用一个线程直到 SSE 结束（模型-工具循环阻塞驱动），
+     * 故核心线程数需兼顾并发会话数。
+     */
+    @Bean
+    public ThreadPoolTaskExecutor streamExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("stream-chat-");
         executor.initialize();
         return executor;
     }

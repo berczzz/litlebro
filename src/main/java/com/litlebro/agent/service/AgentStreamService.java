@@ -111,7 +111,7 @@ public class AgentStreamService {
      * @param attachments 附件列表，可为空
      * @param emitter     客户端 SSE 连接
      */
-    @Async
+    @Async("streamExecutor")
     public void streamChat(String userMessage, String sessionId, List<AttachmentInput> attachments, SseEmitter emitter) {
         SessionContextHolder.set(sessionId);
         try {

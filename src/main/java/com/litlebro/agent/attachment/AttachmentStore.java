@@ -47,6 +47,10 @@ public class AttachmentStore {
     private final Path baseDir;
     private final long ttlMillis;
     private final long maxSizeBytes;
+    /** 工具单次读取/检索的最大行数（read_file/grep_file 共用硬上限） */
+    private final int toolMaxLines;
+    /** 工具单次返回的最大字符数（read_file/grep_file 共用硬上限） */
+    private final int toolMaxChars;
     private final AttachmentRegistry registry;
     private final AttachmentResolverFactory resolverFactory;
     private final DocumentParserFactory parserFactory;
@@ -57,13 +61,17 @@ public class AttachmentStore {
             DocumentParserFactory parserFactory,
             @Value("${app.attachment.dir:./data/attachments}") String dir,
             @Value("${app.attachment.ttl-days:7}") long ttlDays,
-            @Value("${app.attachment.max-size:20971520}") long maxSizeBytes) {
+            @Value("${app.attachment.max-size:20971520}") long maxSizeBytes,
+            @Value("${app.attachment.tool-max-lines:500}") int toolMaxLines,
+            @Value("${app.attachment.tool-max-chars:12000}") int toolMaxChars) {
         this.registry = registry;
         this.resolverFactory = resolverFactory;
         this.parserFactory = parserFactory;
         this.baseDir = Path.of(dir).toAbsolutePath().normalize();
         this.ttlMillis = ttlDays * 24L * 60L * 60L * 1000L;
         this.maxSizeBytes = maxSizeBytes;
+        this.toolMaxLines = Math.max(1, toolMaxLines);
+        this.toolMaxChars = Math.max(1, toolMaxChars);
         try {
             Files.createDirectories(baseDir);
         } catch (IOException e) {
@@ -135,10 +143,12 @@ public class AttachmentStore {
      * 按行读取附件文本（供 read_file 工具使用），支持起始/结束行号切片。
      *
      * <p>采用 {@link Files#lines} 流式读取，只把目标行载入内存，避免大文件 OOM。
+     * 单次读取受 {@link #toolMaxLines}（行数）与 {@link #toolMaxChars}（字符数）双重硬上限约束，
+     * 超限即截断并在结尾追加续读提示，防止模型一次性读取整个大文件。
      *
      * @param fileId     附件唯一标识
      * @param startLine  起始行号（从 1 开始）
-     * @param endLine    结束行号（含），小于 startLine 或超出文件范围时自动收拢
+     * @param endLine    结束行号（含），小于 startLine 或超出文件范围时自动收拢；-1 表示读取到末尾
      * @return 切片文本（带原始行号标注），附件不存在返回 null
      * @throws IOException 解析或读取失败时抛出
      */
@@ -148,24 +158,43 @@ public class AttachmentStore {
             return null;
         }
         int start = Math.max(1, startLine);
+        // 行窗口硬上限：单次最多读取 toolMaxLines 行，防止 -1（读到末尾）全量读取大文件
+        long endCap = (long) start + toolMaxLines - 1;
+        boolean lineCapped = endLine <= 0 || endLine > endCap;
+        int effectiveEnd = lineCapped ? (int) endCap : endLine;
         StringBuilder sb = new StringBuilder();
         long lineNo = 0;
         boolean inRange = false;
+        boolean lineTruncated = false;
+        boolean charTruncated = false;
         try (Stream<String> lines = Files.lines(textPath, StandardCharsets.UTF_8)) {
             for (String line : (Iterable<String>) lines::iterator) {
                 lineNo++;
                 if (lineNo < start) {
                     continue;
                 }
-                if (endLine > 0 && lineNo > endLine) {
+                if (lineNo > effectiveEnd) {
+                    // 仅当因行窗口上限（而非文件自然读完）停下才算截断
+                    lineTruncated = lineCapped;
+                    break;
+                }
+                String hit = lineNo + ": " + line + "\n";
+                if (sb.length() + hit.length() > toolMaxChars) {
+                    charTruncated = true;
                     break;
                 }
                 inRange = true;
-                sb.append(lineNo).append(": ").append(line).append("\n");
+                sb.append(hit);
             }
         }
-        if (!inRange) {
+        if (!inRange && !lineTruncated && !charTruncated) {
             return "[起始行 " + start + " 超出文件范围]";
+        }
+        if (lineTruncated || charTruncated) {
+            // 截断提示指明续读位置，让模型知道如何继续（对齐业界"截断必须可见且指明恢复路径"）
+            long resume = lineTruncated ? (long) effectiveEnd + 1 : lineNo;
+            log.warn("read_file 结果超限已截断 fileId={} start={} end={} 行上限={} 字符上限={}", fileId, start, endLine, toolMaxLines, toolMaxChars);
+            sb.append("\n...[结果已截断，请用 read_file 从第 ").append(resume).append(" 行继续读取]");
         }
         return sb.toString();
     }
@@ -174,6 +203,8 @@ public class AttachmentStore {
      * 按正则检索附件文本（供 grep_file 工具使用），返回带行号的匹配行。
      *
      * <p>采用 {@link Files#lines} 流式读取，逐行匹配、只保留命中结果，避免大文件 OOM。
+     * 单次检索受 {@link #toolMaxLines}（命中行数）与 {@link #toolMaxChars}（字符数）双重硬上限约束，
+     * 超限即截断并追加提示，防止宽泛正则把整个大文件都匹配回来。
      *
      * @param fileId   附件唯一标识
      * @param pattern  正则表达式
@@ -187,23 +218,35 @@ public class AttachmentStore {
             return null;
         }
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern);
+        int lineCap = Math.max(1, Math.min(maxLines, toolMaxLines));
         StringBuilder sb = new StringBuilder();
         long lineNo = 0;
         int count = 0;
+        boolean truncated = false;
         try (Stream<String> lines = Files.lines(textPath, StandardCharsets.UTF_8)) {
             for (String line : (Iterable<String>) lines::iterator) {
                 lineNo++;
-                if (count >= maxLines) {
+                if (count >= lineCap) {
+                    truncated = true;
                     break;
                 }
                 if (p.matcher(line).find()) {
-                    sb.append(lineNo).append(": ").append(line).append("\n");
+                    String hit = lineNo + ": " + line + "\n";
+                    if (sb.length() + hit.length() > toolMaxChars) {
+                        truncated = true;
+                        break;
+                    }
+                    sb.append(hit);
                     count++;
                 }
             }
         }
-        if (count == 0) {
+        if (count == 0 && !truncated) {
             return "未找到匹配内容。";
+        }
+        if (truncated) {
+            log.warn("grep_file 结果超限已截断 fileId={} pattern={} 行上限={} 字符上限={}", fileId, pattern, lineCap, toolMaxChars);
+            sb.append("...[结果已截断，命中过多，请用更精确的正则缩小范围]");
         }
         return sb.toString();
     }

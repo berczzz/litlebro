@@ -46,7 +46,7 @@ public class SearchMemoryTool implements AgentTool {
 
     @Override
     public String description() {
-        return "检索当前会话的历史记忆，当用户询问此前对话内容或想回忆本会话聊过什么时使用";
+        return "检索当前会话的对话记录，用于回忆本会话聊过什么、做过什么决定；不含上传文档内容";
     }
 
     /**
@@ -55,9 +55,9 @@ public class SearchMemoryTool implements AgentTool {
      * @param query 检索词，描述想查找的记忆内容
      * @return 命中的记忆片段文本，无结果时返回提示语
      */
-    @Tool(name = "search_memory", description = "检索当前会话的历史记忆，返回与本会话相关的过往对话内容。当用户询问此前聊过什么、做过什么决定时调用")
+    @Tool(name = "search_memory", description = "检索当前会话的对话记录，用于回忆本会话中用户说过什么、助手答过什么、做过什么决定。注意：本工具仅包含对话记录，不包含用户上传的文档/文件/数据内容；查询涉及上传文件中的数据、记录、报表、文档内容时，不要使用本工具")
     public String searchMemory(
-            @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词") String query) {
+            @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词，描述越完整检索命中率越高") String query) {
         String sessionId = SessionContextHolder.get();
         log.info("searchMemory执行开始：{}，sessionId：{}", query, sessionId);
         if (sessionId == null || sessionId.isBlank()) {
