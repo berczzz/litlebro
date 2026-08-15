@@ -33,7 +33,8 @@ import java.util.UUID;
  *   <li>txt / md / json — UTF-8 文本直接读取</li>
  *   <li>pdf — PDFBox 提取文本层；图片型页面走 dashscope 多模态模型描述内容</li>
  *   <li>docx — Apache POI 读取段落与表格</li>
- *   <li>xlsx / xls — Apache POI 流式读取（xlsx 走 SAX），防大文件内存溢出</li>
+ *   <li>xlsx / xls / csv — 表格解析器统一输出「第N行: 值1 | 值2」；
+ *       xlsx 走 SAX 流式读取防大文件内存溢出，csv 为 RFC 4180 子集手写解析（零依赖）</li>
  *   <li>png / jpg / jpeg / gif / webp / bmp — 视觉模型描述图片内容后入库</li>
  * </ul>
  *

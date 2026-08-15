@@ -19,25 +19,25 @@ public class DocumentParserFactory {
 
     private final TextDocumentParser textParser;
     private final PdfDocumentParser pdfParser;
-    private final ExcelDocumentParser excelParser;
+    private final SpreadsheetDocumentParser spreadsheetParser;
     private final WordDocumentParser wordParser;
     private final ImageDocumentParser imageParser;
 
     public DocumentParserFactory(TextDocumentParser textParser,
                                  PdfDocumentParser pdfParser,
-                                 ExcelDocumentParser excelParser,
+                                 SpreadsheetDocumentParser spreadsheetParser,
                                  WordDocumentParser wordParser,
                                  ImageDocumentParser imageParser) {
         this.textParser = textParser;
         this.pdfParser = pdfParser;
-        this.excelParser = excelParser;
+        this.spreadsheetParser = spreadsheetParser;
         this.wordParser = wordParser;
         this.imageParser = imageParser;
     }
 
     /** 当前支持的全部扩展名（小写，不含点） */
     public List<String> supportedExtensions() {
-        return List.of("txt", "md", "json", "pdf", "xlsx", "xls", "docx",
+        return List.of("txt", "md", "json", "pdf", "xlsx", "xls", "csv", "docx",
                 "png", "jpg", "jpeg", "gif", "webp", "bmp");
     }
 
@@ -53,7 +53,7 @@ public class DocumentParserFactory {
         return switch (ext) {
             case "txt", "md", "json" -> textParser;
             case "pdf" -> pdfParser;
-            case "xlsx", "xls" -> excelParser;
+            case "xlsx", "xls", "csv" -> spreadsheetParser;
             case "docx" -> wordParser;
             case "png", "jpg", "jpeg", "gif", "webp", "bmp" -> imageParser;
             default -> throw new IllegalArgumentException("不支持的文件格式: " + ext

@@ -9,9 +9,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.util.CollectionUtils;
 
 import java.util.*;
+import java.util.concurrent.Future;
 
 /**
  * 向量记忆存储，封装 Spring AI VectorStore 实现语义记忆的写入和检索。
@@ -40,9 +42,22 @@ public class VectorMemoryStore implements MemoryStore {
 
     private final VectorStore vectorStore;
 
-    public VectorMemoryStore(VectorStore vectorStore, double similarityThreshold) {
+    /**
+     * 文档切块并发入库线程池（{@code ingestExecutor}）。
+     */
+    private final AsyncTaskExecutor ingestExecutor;
+
+    /**
+     * 文档切块并发入库的并行度，来自 {@code app.rag.ingest-parallelism}。
+     */
+    private final int ingestParallelism;
+
+    public VectorMemoryStore(VectorStore vectorStore, double similarityThreshold,
+                             AsyncTaskExecutor ingestExecutor, int ingestParallelism) {
         this.vectorStore = vectorStore;
         this.similarityThreshold = similarityThreshold;
+        this.ingestExecutor = ingestExecutor;
+        this.ingestParallelism = Math.max(1, ingestParallelism);
     }
 
     @Override
@@ -206,11 +221,37 @@ public class VectorMemoryStore implements MemoryStore {
             return;
         }
         try {
-            vectorStore.add(chunks);
+            if (ingestParallelism <= 1 || chunks.size() == 1) {
+                vectorStore.add(chunks);
+            } else {
+                parallelAdd(chunks);
+            }
             log.info("文档切块已入库 count={}", chunks.size());
         } catch (Exception e) {
             log.warn("文档切块入库失败 原因: {}", e.getMessage());
             throw e;
+        }
+    }
+
+    /**
+     * 将切块分为 {@code ingestParallelism} 组并发写入向量库，每组内部由向量库
+     * 实现按 {@code embed-batch-size} 分批 embedding（本地 BatchingSimpleVectorStore /
+     * Milvus batchingStrategy 均适用）。等待全部组完成，任一组失败则抛出异常。
+     */
+    private void parallelAdd(List<Document> chunks) {
+        int groups = Math.min(ingestParallelism, chunks.size());
+        int perGroup = (chunks.size() + groups - 1) / groups;
+        List<Future<?>> futures = new ArrayList<>(groups);
+        for (int i = 0; i < chunks.size(); i += perGroup) {
+            List<Document> group = chunks.subList(i, Math.min(chunks.size(), i + perGroup));
+            futures.add(ingestExecutor.submit(() -> vectorStore.add(group)));
+        }
+        for (Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (Exception e) {
+                throw new RuntimeException("文档切块并行入库失败", e);
+            }
         }
     }
 

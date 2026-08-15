@@ -15,7 +15,7 @@
   - 保留最近 6 条消息原文，更早的历史压缩为摘要存入长期记忆
   - 压缩时传入旧摘要做增量，不重复压缩同一段历史
 - **可插拔工具**：日期时间、会话记忆检索、文档知识库检索、附件读取/检索，LLM 按需自动调用
-- **RAG 文档知识库**：上传 txt/md/json/pdf/docx/xlsx/xls/图片 → 语义/固定切块 → 向量化，LLM 按需检索
+- **RAG 文档知识库**：上传 txt/md/json/pdf/docx/xlsx/xls/csv/图片 → 语义/固定切块 → 向量化，LLM 按需检索
 - **附件直传**：对话时可直接携带文件（base64 / URL / multipart），文档类附件懒解析后由 LLM 用工具读取，到期自动清理
 - **两级检索过滤**：向量库宽召回（低阈值）+ 工具层相似度二次过滤（去噪）
 - **存储模式可切换**：内存实现（默认，开箱即用）/ Redis + Milvus 外部实现
@@ -31,7 +31,7 @@
 | 构建工具 | Maven |
 | 向量库 | Milvus（可回退 SimpleVectorStore） |
 | 缓存/短期记忆 | Redis（可回退内存） |
-| 文档解析 | PDFBox（PDF）/ Apache POI（docx/xlsx/xls）/ dashscope qwen-vl（图片视觉描述） |
+| 文档解析 | PDFBox（PDF）/ Apache POI（docx/xlsx/xls）/ 手写 CSV（csv）/ dashscope qwen-vl（图片视觉描述） |
 
 ## 快速开始
 
@@ -85,7 +85,7 @@ curl http://localhost:8080/api/agent/session/demo-1
 # 长期记忆（摘要）
 curl http://localhost:8080/api/agent/memory/demo-1
 
-# 上传文档到知识库（txt/md/json/pdf/docx/xlsx/xls/图片）
+# 上传文档到知识库（txt/md/json/pdf/docx/xlsx/xls/csv/图片）
 curl -X POST http://localhost:8080/api/rag/document \
   -F "file=@/path/to/doc.txt"
 
@@ -104,7 +104,7 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 | GET | `/api/agent/tools` | 可用工具列表 |
 | GET | `/api/agent/session/{sessionId}` | 会话统计（token 累积、轮次、模型） |
 | GET | `/api/agent/memory/{sessionId}` | 会话长期记忆（摘要 + 事实） |
-| POST | `/api/rag/document` | 文档入库，multipart 字段名 `file`（txt/md/json/pdf/docx/xlsx/xls/图片） |
+| POST | `/api/rag/document` | 文档入库，multipart 字段名 `file`（txt/md/json/pdf/docx/xlsx/xls/csv/图片） |
 | DELETE | `/api/rag/document/{docId}` | 按文档 ID 删除全部切块 |
 
 ## 记忆架构
@@ -183,13 +183,13 @@ app:
 ## RAG 文档知识库
 
 - 文档按 `category == document` **全局共享**（不绑定 sessionId），会话记忆按 sessionId 隔离
-- 上传：`POST /api/rag/document`（multipart `file`），支持 txt/md/json/pdf（PDFBox）/docx/xlsx/xls（Apache POI）/png/jpg/jpeg/gif/webp/bmp（视觉描述）
+- 上传：`POST /api/rag/document`（multipart `file`），支持 txt/md/json/pdf（PDFBox）/docx/xlsx/xls（Apache POI）/csv（手写 RFC 4180）/png/jpg/jpeg/gif/webp/bmp（视觉描述）
 - PDF 解析走策略模式：优先提取文本层；图片型页面渲染为图片后由 dashscope 视觉模型（qwen-vl）**描述内容**入库，`app.rag.vision.enabled` 控制
 - **图片内容识别**：图片型 PDF 页面与直接上传的图片文件，均由 qwen-vl 将画面描述为文字后以纯文本入库；多模态能力只在入库时使用一次，检索与回答全程走纯文本链路（不依赖视觉模型也能回答）
 - **大文件防护**：上传单文件上限 50MB（`APP_MAX_FILE_SIZE`）；xlsx 走 SAX 流式读取避免整本加载；解析文本超过 `app.rag.max-text-length` 自动截断，防止内存溢出
 - **解析缓存**：以文件内容 SHA-256 为 key 缓存解析文本，重复上传同一文件直接跳过解析——图片型文档只在首次上传调用一次视觉模型，省 token；存储后端由 `app.rag.cache.type` 显式切换（`local` 本地内存 / `redis` Redis + TTL），与短期记忆配置互不影响
 - 检索：由 LLM 按需调用两个工具——`search_document`（查文档库）、`search_memory`（查本会话记忆）
-- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800）
+- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800；段数超过 500 跳过向量化直接固定切分，防大表格逐行成段导致海量 embedding 请求）
    或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
 - 语义切块复用对话同一个 embedding 模型，保证切块/检索/对话向量空间一致
 
@@ -287,7 +287,7 @@ src/main/java/com/litlebro/agent/
 │       ├── TextDocumentParser.java   # 纯文本（txt/md/json）
 │       ├── PdfDocumentParser.java    # PDF（文本层 + 图片页视觉描述）
 │       ├── WordDocumentParser.java   # Word（docx，Apache POI）
-│       ├── ExcelDocumentParser.java  # Excel（xlsx/xls，POI 流式）
+│       ├── SpreadsheetDocumentParser.java # 表格（xlsx/xls/csv，POI 流式 + 手写 CSV）
 │       ├── ImageDocumentParser.java  # 图片（png/jpg/jpeg/gif/webp/bmp）
 │       └── VisionDescribeService.java # 图片视觉描述（dashscope qwen-vl）
 ├── dto/                            # 请求/响应结构

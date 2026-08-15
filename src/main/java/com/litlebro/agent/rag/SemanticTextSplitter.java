@@ -18,8 +18,10 @@ import java.util.regex.Pattern;
  * <p>借鉴 LangChain SemanticChunker / LlamaIndex SemanticSplitterNodeParser：
  * <ol>
  *   <li>句子切分：按中文句末标点（。！？）与换行切分为候选段，合并过短段</li>
- *   <li>向量化：对每个段调用 {@link EmbeddingModel#embed(String)}（与检索同一模型，
- *       保证切块向量与检索向量处于同一向量空间）</li>
+ *   <li>向量化：分批（每批 embedBatchSize 段）调用
+ *       {@link EmbeddingModel#embed(java.util.List)}（与检索同一模型，
+ *       保证切块向量与检索向量处于同一向量空间）；段数超过上限时跳过向量化，
+ *       直接按固定大小切分</li>
  *   <li>相似度序列：buffer 滑动窗口计算相邻窗口的余弦相似度，得差异序列</li>
  *   <li>断点判定：percentile 模式取差异序列第 N 百分位为阈值（默认 95，自适应文档），
  *       fixed 模式用固定相似度阈值</li>
@@ -39,15 +41,22 @@ public class SemanticTextSplitter extends TextSplitter {
     private final double fixedThreshold;
     private final int bufferSize;
     private final int maxChunk;
+    /** 语义向量化的段数上限，超过则跳过向量化直接按固定大小切分（防大数据表格逐行成段导致海量请求） */
+    private final int maxEmbedSegments;
+    /** 单次 embedding 请求的输入条数上限（dashscope 兼容模式 text-embedding 系列单请求最多 10 条） */
+    private final int embedBatchSize;
 
     public SemanticTextSplitter(EmbeddingModel embeddingModel, BreakpointMode breakpointMode,
-                                double percentile, double fixedThreshold, int bufferSize, int maxChunk) {
+                                double percentile, double fixedThreshold, int bufferSize, int maxChunk,
+                                int maxEmbedSegments, int embedBatchSize) {
         this.embeddingModel = embeddingModel;
         this.breakpointMode = breakpointMode;
         this.percentile = percentile;
         this.fixedThreshold = fixedThreshold;
         this.bufferSize = bufferSize;
         this.maxChunk = maxChunk;
+        this.maxEmbedSegments = maxEmbedSegments;
+        this.embedBatchSize = Math.max(1, embedBatchSize);
     }
 
     @Override
@@ -60,15 +69,20 @@ public class SemanticTextSplitter extends TextSplitter {
             return segments;
         }
 
-        // 逐段向量化
-        List<float[]> vectors = new ArrayList<>(segments.size());
-        for (String segment : segments) {
-            try {
-                vectors.add(embeddingModel.embed(segment));
-            } catch (Exception e) {
-                log.warn("句子向量化失败，回退为整段单块 原因: {}", e.getMessage());
-                return List.of(text);
-            }
+        // 段数过多（如大数据表格逐行成段）时，逐段向量化会产生海量 embedding 请求，
+        // 且此类文本并无语义句子结构，直接按固定大小切分
+        if (segments.size() > maxEmbedSegments) {
+            log.warn("语义切块段数 {} 超过上限 {}，跳过向量化，按固定大小切分", segments.size(), maxEmbedSegments);
+            return forceSplit(text, maxChunk);
+        }
+
+        // 分批向量化：每批若干段一次请求，减少 HTTP 调用次数与超时概率
+        List<float[]> vectors;
+        try {
+            vectors = batchEmbed(segments);
+        } catch (Exception e) {
+            log.warn("句子向量化失败，回退为固定大小切分 原因: {}", e.getMessage());
+            return forceSplit(text, maxChunk);
         }
 
         // buffer 滑动窗口相似度序列
@@ -92,6 +106,21 @@ public class SemanticTextSplitter extends TextSplitter {
             }
         }
         return result;
+    }
+
+    /**
+     * 分批向量化：每批若干段一次请求，单批数量受 embedding 接口每请求输入条数上限约束。
+     *
+     * @param segments 待向量化段列表
+     * @return 与输入顺序一致的向量列表
+     */
+    private List<float[]> batchEmbed(List<String> segments) {
+        List<float[]> vectors = new ArrayList<>(segments.size());
+        for (int i = 0; i < segments.size(); i += embedBatchSize) {
+            List<String> batch = segments.subList(i, Math.min(segments.size(), i + embedBatchSize));
+            vectors.addAll(embeddingModel.embed(batch));
+        }
+        return vectors;
     }
 
     /**

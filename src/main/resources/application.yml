@@ -24,15 +24,19 @@ spring:
   ai:
     openai:
       api-key: ${OPEN_AI_API_KEY:''}
-      base-url: ${OPEN_AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
+      base-url: ${OPEN_AI_BASE_URL:https://ms-ens-fa365593-e91c.api-inference.modelscope.cn/v1}
       chat:
         options:
-          model: qwen3.8-max
+          model: Qwen/Qwen3-4B
           temperature: 0.7
           max-tokens: 131072
       embedding:
+        # 向量化端点可独立于对话端点（对话走一个 ENS、向量化走另一个 ENS 或 dashscope 兼容端点）
+        base-url: ${OPEN_AI_EMBED_BASE_URL:${OPEN_AI_BASE_URL:}}
+        api-key: ${OPEN_AI_EMBED_API_KEY:${OPEN_AI_API_KEY:''}}
         options:
-          model: text-embedding-v3
+          # 向量化模型需与所选端点匹配：dashscope 用 text-embedding-v3/v4，ModelScope ENS 用其部署的 embed 模型 id
+          model: ${APP_EMBED_MODEL:text-embedding-v3}
       retry:
         max-attempts: 3
         backoff:
@@ -105,6 +109,8 @@ app:
     vector:
       # 语义检索相似度阈值：低于该值的片段视为不相关，默认 0.2（宽召回，配合 LLM 精排）
       similarity-threshold: ${APP_MEMORY_VECTOR_SIMILARITY_THRESHOLD:0.2}
+      # 向量库写入时的 embedding 分批大小（条/请求），减少大文档入库的 HTTP 调用次数（本地/Milvus/语义切块共用；dashscope 单请求上限 10 条）
+      embed-batch-size: ${APP_MEMORY_VECTOR_EMBED_BATCH_SIZE:10}
     # 会话记忆检索工具二次过滤阈值：低于该分数的片段丢弃
     min-score: ${APP_MEMORY_MIN_SCORE:0.35}
   stream:
@@ -119,6 +125,9 @@ app:
     min-score: ${APP_RAG_MIN_SCORE:0.35}
     # 单份文档解析文本长度上限（字符），超限截断，防止大文件耗尽内存
     max-text-length: ${APP_RAG_MAX_TEXT_LENGTH:3000000}
+    # 文档切块并发入库并行度：切块分为 N 组并发写入向量库（每组内部仍按 embed-batch-size 分批 embedding），
+    # 并发度越高入库越快，但会增加 dashscope 的并发请求数，429 时 Spring AI 会自动重试
+    ingest-parallelism: ${APP_RAG_INGEST_PARALLELISM:4}
     # 文档解析缓存：文件内容哈希为 key，重复上传时跳过解析（图片型文档避免重复调用视觉模型）
     cache:
       # 存储后端: local(默认, 本地内存) | redis（写入 Redis，带 TTL，重启不丢）
@@ -152,6 +161,8 @@ app:
       semantic-buffer-size: ${APP_RAG_SEMANTIC_BUFFER:3}
       # semantic 策略：单块最大字符数，超限二次固定切分
       semantic-max-chunk: ${APP_RAG_SEMANTIC_MAX_CHUNK:800}
+      # semantic 策略：语义向量化的段数上限，超过则跳过向量化直接固定切分（防大表格逐行成段导致海量请求）
+      semantic-max-segments: ${APP_RAG_SEMANTIC_MAX_SEGMENTS:500}
 
 server:
   port: 8080

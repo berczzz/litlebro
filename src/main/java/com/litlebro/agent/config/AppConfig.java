@@ -31,11 +31,14 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.milvus.MilvusVectorStore;
+import com.litlebro.agent.vectorstore.BatchingSimpleVectorStore;
+import com.litlebro.agent.vectorstore.CountBatchingStrategy;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -97,8 +100,9 @@ public class AppConfig {
 
     @Bean
     @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "local", matchIfMissing = true)
-    public VectorStore simpleVectorStore(EmbeddingModel embeddingModel) {
-        return SimpleVectorStore.builder(embeddingModel).build();
+    public VectorStore simpleVectorStore(EmbeddingModel embeddingModel,
+                                         @Value("${app.memory.vector.embed-batch-size:10}") int embedBatchSize) {
+        return new BatchingSimpleVectorStore(SimpleVectorStore.builder(embeddingModel), embedBatchSize);
     }
 
     @Bean
@@ -121,6 +125,7 @@ public class AppConfig {
     @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "milvus")
     public VectorStore milvusVectorStore(MilvusServiceClient milvusClient,
                                          EmbeddingModel embeddingModel,
+                                         @Value("${app.memory.vector.embed-batch-size:10}") int embedBatchSize,
                                          @Value("${spring.ai.vectorstore.milvus.database-name:default}") String databaseName,
                                          @Value("${spring.ai.vectorstore.milvus.collection-name:vector_store}") String collectionName,
                                          @Value("${spring.ai.vectorstore.milvus.embedding-dimension:1536}") int embeddingDimension,
@@ -133,6 +138,7 @@ public class AppConfig {
                 .indexType(IndexType.valueOf(indexType))
                 .metricType(MetricType.valueOf(metricType))
                 .initializeSchema(true)
+                .batchingStrategy(new CountBatchingStrategy(embedBatchSize))
                 .build();
     }
 
@@ -224,11 +230,30 @@ public class AppConfig {
         return executor;
     }
 
+    /**
+     * 文档入库专用线程池：{@link VectorMemoryStore#saveDocumentChunks} 按切块分组并发写入向量库，
+     * 每组内部仍按 {@code app.memory.vector.embed-batch-size}（默认 10 条/请求）分批 embedding。
+     * 并发度即核心线程数，由 {@code app.rag.ingest-parallelism} 控制。
+     */
+    @Bean("ingestExecutor")
+    public ThreadPoolTaskExecutor ingestExecutor(
+            @Value("${app.rag.ingest-parallelism:4}") int parallelism) {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(parallelism);
+        executor.setMaxPoolSize(parallelism);
+        executor.setQueueCapacity(5000);
+        executor.setThreadNamePrefix("ingest-");
+        executor.initialize();
+        return executor;
+    }
+
     @Bean
     public VectorMemoryStore vectorMemoryStore(
             VectorStore vectorStore,
-            @Value("${app.memory.vector.similarity-threshold:0.2}") double similarityThreshold) {
-        return new VectorMemoryStore(vectorStore, similarityThreshold);
+            @Value("${app.memory.vector.similarity-threshold:0.2}") double similarityThreshold,
+            @Qualifier("ingestExecutor") AsyncTaskExecutor ingestExecutor,
+            @Value("${app.rag.ingest-parallelism:4}") int ingestParallelism) {
+        return new VectorMemoryStore(vectorStore, similarityThreshold, ingestExecutor, ingestParallelism);
     }
 
     @Bean
@@ -243,13 +268,15 @@ public class AppConfig {
             @Value("${app.rag.splitter.semantic-percentile:95}") double percentile,
             @Value("${app.rag.splitter.semantic-threshold:0.7}") double threshold,
             @Value("${app.rag.splitter.semantic-buffer-size:3}") int bufferSize,
-            @Value("${app.rag.splitter.semantic-max-chunk:800}") int maxChunk) {
+            @Value("${app.rag.splitter.semantic-max-chunk:800}") int maxChunk,
+            @Value("${app.rag.splitter.semantic-max-segments:500}") int maxEmbedSegments,
+            @Value("${app.memory.vector.embed-batch-size:10}") int embedBatchSize) {
         return new SemanticTextSplitter(
                 embeddingModel,
                 "fixed".equalsIgnoreCase(breakpointMode)
                         ? SemanticTextSplitter.BreakpointMode.FIXED
                         : SemanticTextSplitter.BreakpointMode.PERCENTILE,
-                percentile, threshold, bufferSize, maxChunk);
+                percentile, threshold, bufferSize, maxChunk, maxEmbedSegments, embedBatchSize);
     }
 
     @Bean
