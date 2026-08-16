@@ -36,4 +36,16 @@ public interface AgentTool {
      * @return 工具描述
      */
     String description();
+
+    /**
+     * 工具唯一 ID，用于禁用/启用等管理操作（禁用后从给大模型的工具列表剔除）。
+     * 默认取类名（首字母小写），启动即确定且跨重启稳定，避免重启后禁用关系失效；
+     * 实现类可按需覆盖。
+     *
+     * @return 工具 ID
+     */
+    default String id() {
+        String simple = getClass().getSimpleName();
+        return simple.isEmpty() ? name() : Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
+    }
 }

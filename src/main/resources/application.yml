@@ -165,6 +165,32 @@ app:
       semantic-max-chunk: ${APP_RAG_SEMANTIC_MAX_CHUNK:800}
       # semantic 策略：语义向量化的段数上限，超过则跳过向量化直接固定切分（防大表格逐行成段导致海量请求）
       semantic-max-segments: ${APP_RAG_SEMANTIC_MAX_SEGMENTS:500}
+  tool:
+    # 工具禁用状态存储
+    store:
+      # 存储后端: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
+      type: ${APP_TOOL_STORE_TYPE:local}
+  skill:
+    # 技能（Skills）模块总开关：false 时 SkillService/工具/Controller 全部不加载
+    enabled: ${APP_SKILL_ENABLED:false}
+    # 技能包根目录：技能按 {dir}/{skillId}/SKILL.md（必填）+ scripts/ + references/ + assets/ 预置
+    dir: ${APP_SKILL_DIR:./data/skills}
+    # 技能存储（enabled=true 时生效）
+    store:
+      # 存储后端: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
+      type: ${APP_SKILL_STORE_TYPE:local}
+    # 技能脚本执行配置
+    exec:
+      # 执行总开关：false 时 exec_skill 一律拒绝（load_skill/read_skill_file 不受影响）
+      enabled: ${APP_SKILL_EXEC_ENABLED:false}
+      # 单脚本执行超时（毫秒），超时强杀进程
+      timeout-ms: ${APP_SKILL_EXEC_TIMEOUT_MS:30000}
+      # 单次执行输出返回上限（字符），超限截断
+      output-max-chars: ${APP_SKILL_EXEC_OUTPUT_MAX_CHARS:8192}
+      # 解释器白名单：扩展名映射/shebang 得到的解释器必须在此列表中
+      interpreter-allow-list: ${APP_SKILL_EXEC_INTERPRETER_ALLOW_LIST:python3,node,bash,powershell}
+    # 静态预注册的技能定义列表（启动时同名跳过，不覆盖动态改动）
+    skills: []
 
 server:
   port: 8080

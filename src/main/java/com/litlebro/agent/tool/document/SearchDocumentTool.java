@@ -1,7 +1,8 @@
-package com.litlebro.agent.tool;
+package com.litlebro.agent.tool.document;
 
 import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.memory.VectorMemoryStore;
+import com.litlebro.agent.tool.AgentTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;

@@ -1,8 +1,9 @@
-package com.litlebro.agent.tool;
+package com.litlebro.agent.tool.memory;
 
 import com.litlebro.agent.context.SessionContextHolder;
 import com.litlebro.agent.memory.VectorMemoryStore;
 import com.litlebro.agent.memory.model.AgentMessage;
+import com.litlebro.agent.tool.AgentTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;

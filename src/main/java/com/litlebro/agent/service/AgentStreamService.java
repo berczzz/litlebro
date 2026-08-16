@@ -13,12 +13,15 @@ import com.litlebro.agent.service.stream.StreamEventSender;
 import com.litlebro.agent.service.stream.StreamingToolExecutor;
 import com.litlebro.agent.service.stream.ToolCall;
 import com.litlebro.agent.session.SessionManager;
+import com.litlebro.agent.skill.SkillService;
+import com.litlebro.agent.skill.model.SkillDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -74,6 +77,7 @@ public class AgentStreamService {
     private final ChatMemory chatMemory;
     private final LongTermMemoryService longTermMemoryService;
     private final SessionManager sessionManager;
+    private final ObjectProvider<SkillService> skillServiceProvider;
 
     public AgentStreamService(OpenAiSseClient sseClient,
                               StreamingToolExecutor toolExecutor,
@@ -82,7 +86,8 @@ public class AgentStreamService {
                               ContextManager contextManager,
                               ChatMemory chatMemory,
                               LongTermMemoryService longTermMemoryService,
-                              SessionManager sessionManager) {
+                              SessionManager sessionManager,
+                              ObjectProvider<SkillService> skillServiceProvider) {
         this.sseClient = sseClient;
         this.toolExecutor = toolExecutor;
         this.messageConverter = messageConverter;
@@ -91,6 +96,7 @@ public class AgentStreamService {
         this.chatMemory = chatMemory;
         this.longTermMemoryService = longTermMemoryService;
         this.sessionManager = sessionManager;
+        this.skillServiceProvider = skillServiceProvider;
     }
 
     /**
@@ -112,9 +118,37 @@ public class AgentStreamService {
      */
     @Async("streamExecutor")
     public void streamChat(String userMessage, String sessionId, List<AttachmentInput> attachments, SseEmitter emitter) {
+        streamChat(userMessage, sessionId, attachments, List.of(), emitter);
+    }
+
+    /**
+     * 同步校验技能名单：未注册/未启用的 skillId 直接抛出，由全局异常处理器转 400。
+     * 在控制器中于 {@code streamChat} 之前调用——流式处理在异步线程执行，异常无法再映射为 HTTP 400。
+     *
+     * @param sessionId 会话 ID
+     * @param skillIds  请求声明要用的技能 ID 列表
+     */
+    public void validateSkills(String sessionId, List<String> skillIds) {
+        SkillService skillService = skillServiceProvider.getIfAvailable();
+        if (skillService != null) {
+            skillService.resolveUsable(sessionId, skillIds);
+        }
+    }
+
+    @Async("streamExecutor")
+    public void streamChat(String userMessage, String sessionId, List<AttachmentInput> attachments,
+                           List<String> skillIds, SseEmitter emitter) {
         SessionContextHolder.set(sessionId);
         try {
             String model = sseClient.getModel();
+
+            // 技能模块开启时，按请求 skillIds 解析可用技能并写入线程上下文（工具回调使用）
+            List<SkillDefinition> usableSkills = List.of();
+            SkillService skillService = skillServiceProvider.getIfAvailable();
+            if (skillService != null) {
+                usableSkills = skillService.resolveUsable(sessionId, skillIds);
+                SessionContextHolder.setSkillIds(usableSkills.stream().map(SkillDefinition::getSkillId).toList());
+            }
 
             // 1. 短期记忆为空时，从长期记忆回注最新摘要与增量消息，找回历史
             contextManager.restoreContextIfEmpty(sessionId);
@@ -122,6 +156,10 @@ public class AgentStreamService {
             // 2. 组装消息：system 提示词 + 短期记忆历史 + 用户消息（含附件）
             List<Map<String, Object>> messages = new ArrayList<>();
             messages.add(Map.of("role", "system", "content", SystemPrompt.GENERAL));
+            // 技能模块开启且有可用技能时，注入可用技能片段
+            if (!usableSkills.isEmpty()) {
+                messages.add(Map.of("role", "system", "content", skillService.getSystemPromptFragment(usableSkills)));
+            }
             List<Message> history = chatMemory.get(sessionId, Integer.MAX_VALUE);
             if (history != null) {
                 for (Message m : history) {
@@ -139,6 +177,9 @@ public class AgentStreamService {
                     ? new UserMessage(userContent.promptText())
                     : new UserMessage(userContent.promptText(), userContent.media());
             chatMemory.add(sessionId, stmUserMsg);
+
+            // 应用层工具过滤：无可用技能时，技能工具（load_skill/exec_skill/read_skill_file）不进入本次工具列表
+            toolExecutor.beginRequest(!usableSkills.isEmpty());
 
             StreamEventSender.send(emitter, StreamEvent.TYPE_START, Map.of("sessionId", sessionId, "model", model));
 
@@ -195,7 +236,8 @@ public class AgentStreamService {
                 emitter.completeWithError(e);
             }
         } finally {
-            // 清除线程局部会话上下文，避免线程池复用导致串号
+            // 清除线程局部会话上下文与本次工具集，避免线程池复用导致串号
+            toolExecutor.clearRequest();
             SessionContextHolder.clear();
         }
     }

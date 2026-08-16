@@ -8,7 +8,10 @@ import com.litlebro.agent.context.SessionContextHolder;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
+import com.litlebro.agent.skill.SkillService;
+import com.litlebro.agent.skill.model.SkillDefinition;
 import com.litlebro.agent.tool.ToolRegistry;
+import com.litlebro.agent.tool.skill.SkillTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -18,9 +21,9 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.Media;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,18 +48,21 @@ public class AgentService {
     private final LongTermMemoryService longTermMemoryService;
     private final SessionManager sessionManager;
     private final AttachmentAssembler attachmentAssembler;
+    private final ObjectProvider<SkillService> skillServiceProvider;
 
     public AgentService(ChatClient chatClient, ToolRegistry toolRegistry,
                         ContextManager contextManager,
                         LongTermMemoryService longTermMemoryService,
                         SessionManager sessionManager,
-                        AttachmentAssembler attachmentAssembler) {
+                        AttachmentAssembler attachmentAssembler,
+                        ObjectProvider<SkillService> skillServiceProvider) {
         this.chatClient = chatClient;
         this.toolRegistry = toolRegistry;
         this.contextManager = contextManager;
         this.longTermMemoryService = longTermMemoryService;
         this.sessionManager = sessionManager;
         this.attachmentAssembler = attachmentAssembler;
+        this.skillServiceProvider = skillServiceProvider;
     }
 
     public String chat(String userMessage) {
@@ -68,9 +74,21 @@ public class AgentService {
     }
 
     public String chat(String userMessage, String sessionId, List<AttachmentInput> attachments) {
+        return chat(userMessage, sessionId, attachments, List.of());
+    }
+
+    public String chat(String userMessage, String sessionId, List<AttachmentInput> attachments, List<String> skillIds) {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
         SessionContextHolder.set(sessionId);
         try {
+            // 技能模块开启时，按请求 skillIds 解析可用技能并写入线程上下文（工具回调使用）
+            List<SkillDefinition> usableSkills = List.of();
+            SkillService skillService = skillServiceProvider.getIfAvailable();
+            if (skillService != null) {
+                usableSkills = skillService.resolveUsable(sessionId, skillIds);
+                SessionContextHolder.setSkillIds(usableSkills.stream().map(SkillDefinition::getSkillId).toList());
+            }
+
             // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
             contextManager.restoreContextIfEmpty(sessionId);
 
@@ -87,8 +105,15 @@ public class AgentService {
                 prompt.user(promptText);
             }
 
+            // 技能模块开启且有可用技能时，注入可用技能片段（已解析：global ∪ 会话绑定 ∪ 请求名单）
+            if (!usableSkills.isEmpty()) {
+                prompt.system(skillService.getSystemPromptFragment(usableSkills));
+            }
+
+            // 应用层工具过滤：无可用技能时，技能工具（load_skill/exec_skill/read_skill_file）不进入本次工具列表
+            boolean includeSkillTools = !usableSkills.isEmpty();
             ChatResponse response = prompt
-                    .tools(toolRegistry.toToolArray())
+                    .tools(toolRegistry.toToolArray(t -> includeSkillTools || !(t instanceof SkillTool)))
                     .advisors(a -> a.param(MessageChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY, sessionId))
                     .call()
                     .chatResponse();
@@ -117,6 +142,10 @@ public class AgentService {
 
             log.info("会话 [{}] 回答完成", sessionId);
             return content;
+        } catch (IllegalArgumentException e) {
+            // 请求参数非法（如未注册/未启用的 skillId）直接抛出，由全局异常处理器转 400
+            log.warn("会话 [{}] 请求参数非法: {}", sessionId, e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error("会话 [{}] 处理失败", sessionId, e);
             return "抱歉，处理请求时出现错误: " + e.getMessage();
@@ -124,14 +153,6 @@ public class AgentService {
             // 清除线程局部会话上下文，避免线程池复用导致串号
             SessionContextHolder.clear();
         }
-    }
-
-    public List<String> getToolList() {
-        List<String> tools = new ArrayList<>();
-        for (var tool : toolRegistry.getAll()) {
-            tools.add(tool.name() + ": " + tool.description());
-        }
-        return tools;
     }
 
     public Map<String, Object> getSessionInfo(String sessionId) {

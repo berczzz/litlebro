@@ -8,8 +8,6 @@ import com.litlebro.agent.service.AgentService;
 import com.litlebro.agent.service.AgentStreamService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,20 +18,20 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Agent REST API 控制器。
+ * Agent 对话 REST API 控制器。
  *
  * <p>API 端点：
  * <ul>
  *   <li>POST /api/agent/chat — 核心对话接口（JSON，附件 base64/url 来源）</li>
  *   <li>POST /api/agent/chat/multipart — 核心对话接口（multipart，附件文件上传）</li>
  *   <li>POST /api/agent/chat/stream — 流式对话接口（SSE，输出思考/工具调用/回答增量）</li>
- *   <li>GET /api/agent/tools — 查询可用工具列表</li>
- *   <li>GET /api/agent/session/{sessionId} — 查询会话轮次计数</li>
- *   <li>GET /api/agent/memory/{sessionId} — 查询会话长期记忆</li>
+ *   <li>POST /api/agent/chat/stream/multipart — 流式对话接口（multipart，同上）</li>
  * </ul>
+ *
+ * <p>工具管理见 {@link ToolController}（/api/agent/tools），会话状态见 {@link SessionController}，
+ * 会话记忆见 {@link MemoryController}。
  */
 @RestController
 @RequestMapping("/api/agent")
@@ -50,7 +48,7 @@ public class AgentController {
     @PostMapping(value = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
         List<AttachmentInput> attachments = toAttachmentInputs(request.attachments());
-        String answer = agentService.chat(request.question(), request.sessionId(), attachments);
+        String answer = agentService.chat(request.question(), request.sessionId(), attachments, request.skillIds());
         return ChatResponse.of(request.question(), answer, request.sessionId(), null);
     }
 
@@ -58,6 +56,7 @@ public class AgentController {
     public ChatResponse chatMultipart(
             @RequestPart("question") String question,
             @RequestPart(value = "sessionId", required = false) String sessionId,
+            @RequestPart(value = "skillIds", required = false) String skillIds,
             @RequestPart(value = "files", required = false) List<MultipartFile> files) {
         List<AttachmentInput> attachments = new ArrayList<>();
         if (files != null) {
@@ -66,16 +65,18 @@ public class AgentController {
             }
         }
         String sid = (sessionId == null || sessionId.isBlank()) ? "default" : sessionId;
-        String answer = agentService.chat(question, sid, attachments);
+        String answer = agentService.chat(question, sid, attachments, parseSkillIds(skillIds));
         return ChatResponse.of(question, answer, sid, null);
     }
 
     @PostMapping(value = "/chat/stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@Valid @RequestBody ChatRequest request) {
         List<AttachmentInput> attachments = toAttachmentInputs(request.attachments());
+        // 同步校验技能名单（非法 skillId 转 400）；流式处理在异步线程，无法再映射 HTTP 状态码
+        agentStreamService.validateSkills(request.sessionId(), request.skillIds());
         // 0L 表示不超时：模型思考/长回答耗时可能远超默认 30 秒
         SseEmitter emitter = new SseEmitter(0L);
-        agentStreamService.streamChat(request.question(), request.sessionId(), attachments, emitter);
+        agentStreamService.streamChat(request.question(), request.sessionId(), attachments, request.skillIds(), emitter);
         return emitter;
     }
 
@@ -83,6 +84,7 @@ public class AgentController {
     public SseEmitter chatStreamMultipart(
             @RequestPart("question") String question,
             @RequestPart(value = "sessionId", required = false) String sessionId,
+            @RequestPart(value = "skillIds", required = false) String skillIds,
             @RequestPart(value = "files", required = false) List<MultipartFile> files) {
         List<AttachmentInput> attachments = new ArrayList<>();
         if (files != null) {
@@ -91,9 +93,29 @@ public class AgentController {
             }
         }
         String sid = (sessionId == null || sessionId.isBlank()) ? "default" : sessionId;
+        List<String> ids = parseSkillIds(skillIds);
+        // 同步校验技能名单（非法 skillId 转 400）
+        agentStreamService.validateSkills(sid, ids);
         SseEmitter emitter = new SseEmitter(0L);
-        agentStreamService.streamChat(question, sid, attachments, emitter);
+        agentStreamService.streamChat(question, sid, attachments, ids, emitter);
         return emitter;
+    }
+
+    /**
+     * 解析 multipart 传入的技能 ID（逗号分隔字符串，可空）。
+     */
+    private List<String> parseSkillIds(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        return result;
     }
 
     private List<AttachmentInput> toAttachmentInputs(List<FileAttachment> fileAttachments) {
@@ -105,23 +127,5 @@ public class AgentController {
             result.add(new AttachmentInput(fa.dataType(), fa.name(), fa.mimeType(), fa.data(), null));
         }
         return result;
-    }
-
-    @GetMapping("/tools")
-    public Map<String, Object> tools() {
-        return Map.of(
-                "tools", agentService.getToolList(),
-                "description", "本Agent支持以下工具，LLM会根据用户问题自动选择合适的工具"
-        );
-    }
-
-    @GetMapping("/session/{sessionId}")
-    public Map<String, Object> sessionInfo(@PathVariable("sessionId") String sessionId) {
-        return agentService.getSessionInfo(sessionId);
-    }
-
-    @GetMapping("/memory/{sessionId}")
-    public Map<String, Object> sessionMemory(@PathVariable("sessionId") String sessionId) {
-        return agentService.getSessionMemory(sessionId);
     }
 }

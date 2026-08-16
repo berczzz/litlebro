@@ -1,7 +1,8 @@
-package com.litlebro.agent.tool;
+package com.litlebro.agent.tool.attachment;
 
 import com.litlebro.agent.attachment.AttachmentStore;
 import com.litlebro.agent.context.SessionContextHolder;
+import com.litlebro.agent.tool.AgentTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;

@@ -18,6 +18,15 @@ import com.litlebro.agent.rag.local.LocalDocumentParseCache;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.external.RedisSessionManager;
 import com.litlebro.agent.session.local.LocalSessionManager;
+import com.litlebro.agent.skill.LocalSkillExecutor;
+import com.litlebro.agent.skill.SkillExecutor;
+import com.litlebro.agent.skill.SkillProperties;
+import com.litlebro.agent.skill.external.RedisSkillStore;
+import com.litlebro.agent.skill.local.LocalSkillStore;
+import com.litlebro.agent.skill.store.SkillStore;
+import com.litlebro.agent.tool.ToolDisabledStore;
+import com.litlebro.agent.tool.external.RedisToolDisabledStore;
+import com.litlebro.agent.tool.local.LocalToolDisabledStore;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.param.ConnectParam;
 import io.milvus.param.IndexType;
@@ -35,7 +44,9 @@ import com.litlebro.agent.vectorstore.BatchingSimpleVectorStore;
 import com.litlebro.agent.vectorstore.CountBatchingStrategy;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -60,6 +71,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @Configuration
 @EnableAsync
 @EnableScheduling
+@EnableConfigurationProperties(SkillProperties.class)
 public class AppConfig {
 
     // ==================== Redis 公共基础设施 ====================
@@ -193,6 +205,72 @@ public class AppConfig {
             @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
             ObjectMapper objectMapper) {
         return new RedisAttachmentRegistry(appRedisTemplate, objectMapper);
+    }
+
+    // ==================== 工具禁用状态 ====================
+
+    /**
+     * 工具禁用状态存储由 {@code app.tool.store.type} 显式决定：
+     * {@code redis} 时写入 Redis（Hash {@code agent:tool:disabled}，无 TTL），重启不丢；
+     * {@code local}（默认）时写入本地内存，重启丢失。
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.tool.store.type", havingValue = "local", matchIfMissing = true)
+    public ToolDisabledStore localToolDisabledStore() {
+        return new LocalToolDisabledStore();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.tool.store.type", havingValue = "redis")
+    public ToolDisabledStore redisToolDisabledStore(
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate) {
+        return new RedisToolDisabledStore(appRedisTemplate);
+    }
+
+    // ==================== 技能（Skills）====================
+
+    /**
+     * 技能存储由 {@code app.skill.store.type} 显式决定：
+     * {@code redis} 时写入 Redis（技能定义 + 会话技能记录无 TTL），重启不丢；
+     * {@code local}（默认）时写入本地内存，重启丢失。由 {@code app.skill.enabled=true} 时生效。
+     */
+    @Bean
+    @ConditionalOnExpression("${app.skill.enabled:false} && '${app.skill.store.type:local}'.equals('local')")
+    public SkillStore localSkillStore() {
+        return new LocalSkillStore();
+    }
+
+    /**
+     * 技能专用 RedisTemplate（与全局 appRedisTemplate 隔离，避免与 STM/会话等共用导致相互干扰）。
+     */
+    @Bean("skillRedisTemplate")
+    @ConditionalOnExpression("${app.skill.enabled:false} && '${app.skill.store.type:redis}'.equals('redis')")
+    public RedisTemplate<String, Object> skillRedisTemplate(RedisConnectionFactory connectionFactory) {
+        RedisTemplate<String, Object> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(new StringRedisSerializer());
+        template.setHashKeySerializer(new StringRedisSerializer());
+        template.setValueSerializer(new StringRedisSerializer());
+        template.setHashValueSerializer(new StringRedisSerializer());
+        template.afterPropertiesSet();
+        return template;
+    }
+
+    @Bean
+    @ConditionalOnExpression("${app.skill.enabled:false} && '${app.skill.store.type:redis}'.equals('redis')")
+    public SkillStore redisSkillStore(
+            @Qualifier("skillRedisTemplate") RedisTemplate<String, Object> skillRedisTemplate,
+            ObjectMapper objectMapper) {
+        return new RedisSkillStore(skillRedisTemplate, objectMapper);
+    }
+
+    /**
+     * v1 仅提供本地进程执行器；后续 Docker 沙箱 / 远程执行只需新增 SkillExecutor 实现并按配置切换。
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.skill.enabled", havingValue = "true")
+    public SkillExecutor skillExecutor() {
+        return new LocalSkillExecutor();
     }
 
     // ==================== 业务装配 ====================

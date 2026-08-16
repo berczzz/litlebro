@@ -10,6 +10,7 @@ import java.util.List;
  * @param question    用户提问内容，必填
  * @param sessionId   会话标识，为空时默认使用 "default"
  * @param attachments 附件列表（base64/url 来源），可为空；multipart 来源走单独端点
+ * @param skillIds    本次请求要启用的技能 ID 列表，可为空；未注册/未启用的 skillId 会被拒绝
  */
 public record ChatRequest(
         @NotBlank(message = "question 不能为空")
@@ -17,7 +18,9 @@ public record ChatRequest(
 
         String sessionId,
 
-        List<FileAttachment> attachments
+        List<FileAttachment> attachments,
+
+        List<String> skillIds
 ) {
     public ChatRequest {
         if (sessionId == null || sessionId.isBlank()) {
@@ -25,6 +28,9 @@ public record ChatRequest(
         }
         if (attachments == null) {
             attachments = List.of();
+        }
+        if (skillIds == null) {
+            skillIds = List.of();
         }
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.dto.StreamEvent;
 import com.litlebro.agent.tool.ToolRegistry;
+import com.litlebro.agent.tool.skill.SkillTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -19,6 +20,10 @@ import java.util.Map;
 
 /**
  * 流式场景下的工具执行器：组装工具 JSON Schema、按 LLM 返回的工具调用执行并推送事件。
+ *
+ * <p>工具集按请求动态决定：对话入口通过 {@link #beginRequest(boolean)} 传入本次是否包含技能工具，
+ * 组装当前请求的工具回调与 Schema 到 ThreadLocal；工具调用按该请求的工具集解析，
+ * 保证与阻塞式对话同一请求同一工具集（技能模块无可用技能时剔除技能工具）。
  */
 @Component
 public class StreamingToolExecutor {
@@ -28,20 +33,41 @@ public class StreamingToolExecutor {
     /** 工具结果推送给前端的最大字符数，过长时截断，避免事件体过大 */
     private static final int MAX_TOOL_RESULT_CHARS = 2000;
 
-    /** 全部已注册工具的执行回调，按 LLM 返回的工具名（@Tool name）索引 */
-    private final List<ToolCallback> toolCallbacks;
-    /** 组装一次即缓存的工具 JSON Schema 列表 */
-    private final List<Map<String, Object>> toolSchemas;
+    private final ToolRegistry toolRegistry;
+    /** 全部已注册工具的执行回调（兜底），按 LLM 返回的工具名（@Tool name）索引 */
+    private final List<ToolCallback> defaultToolCallbacks;
+    /** 全部工具组装一次即缓存的工具 JSON Schema 列表（兜底） */
+    private final List<Map<String, Object>> defaultToolSchemas;
+    /** 当前请求的工具回调与 Schema（beginRequest 设置，clearRequest 清除） */
+    private final ThreadLocal<RequestTools> requestTools = new ThreadLocal<>();
     private final ObjectMapper objectMapper;
 
     public StreamingToolExecutor(ToolRegistry toolRegistry, ObjectMapper objectMapper) {
+        this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
-        this.toolCallbacks = List.of(ToolCallbacks.from(toolRegistry.toToolArray()));
-        this.toolSchemas = buildToolSchemas();
+        this.defaultToolCallbacks = List.of(ToolCallbacks.from(toolRegistry.toToolArray()));
+        this.defaultToolSchemas = buildToolSchemas(defaultToolCallbacks);
+    }
+
+    /**
+     * 开启一次请求的工具上下文：按本次是否包含技能工具过滤工具集并组装回调与 Schema。
+     *
+     * @param includeSkillTools 本次请求是否有可用技能（决定 load_skill/exec_skill/read_skill_file 是否进入工具列表）
+     */
+    public void beginRequest(boolean includeSkillTools) {
+        Object[] tools = toolRegistry.toToolArray(t -> includeSkillTools || !(t instanceof SkillTool));
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
+        requestTools.set(new RequestTools(callbacks, buildToolSchemas(callbacks)));
+    }
+
+    /** 结束请求的工具上下文，防止线程池复用导致工具集串号 */
+    public void clearRequest() {
+        requestTools.remove();
     }
 
     public List<Map<String, Object>> getToolSchemas() {
-        return toolSchemas;
+        RequestTools current = requestTools.get();
+        return current != null ? current.schemas() : defaultToolSchemas;
     }
 
     /**
@@ -61,7 +87,7 @@ public class StreamingToolExecutor {
                 result = "错误: 未找到工具 " + name;
             } else {
                 // 无参工具模型可能返回空 arguments，需补成合法的空对象 JSON
-                String args = (toolCall.arguments() == null || toolCall.arguments().isBlank()) ? "{}" : toolCall.arguments();
+                String args = toolCall.arguments().isBlank() ? "{}" : toolCall.arguments();
                 result = callback.call(args);
             }
         } catch (Exception e) {
@@ -69,10 +95,10 @@ public class StreamingToolExecutor {
             result = "工具执行失败: " + e.getMessage();
         }
 
-        String display = (result == null || result.isBlank()) ? "(空结果)"
-                : (result.length() > MAX_TOOL_RESULT_CHARS
+        String display = result.isBlank() ? "(空结果)"
+                : result.length() > MAX_TOOL_RESULT_CHARS
                         ? result.substring(0, MAX_TOOL_RESULT_CHARS) + "\n...(已截断)"
-                        : result);
+                        : result;
         StreamEventSender.send(emitter, StreamEvent.TYPE_TOOL_RESULT, Map.of("name", name, "content", display));
         return result;
     }
@@ -106,7 +132,9 @@ public class StreamingToolExecutor {
     }
 
     private ToolCallback findTool(String name) {
-        for (ToolCallback cb : toolCallbacks) {
+        RequestTools current = requestTools.get();
+        List<ToolCallback> callbacks = current != null ? current.callbacks() : defaultToolCallbacks;
+        for (ToolCallback cb : callbacks) {
             if (cb.getToolDefinition().name().equals(name)) {
                 return cb;
             }
@@ -115,12 +143,12 @@ public class StreamingToolExecutor {
     }
 
     /**
-     * 将全部工具的 ToolDefinition 转成 OpenAI 兼容的 tools 数组。
+     * 将工具的 ToolDefinition 转成 OpenAI 兼容的 tools 数组。
      * 工具参数 JSON Schema 从 {@link ToolDefinition#inputSchema()} 解析后原样透传。
      */
-    private List<Map<String, Object>> buildToolSchemas() {
+    private List<Map<String, Object>> buildToolSchemas(List<ToolCallback> callbacks) {
         List<Map<String, Object>> schemas = new ArrayList<>();
-        for (ToolCallback cb : toolCallbacks) {
+        for (ToolCallback cb : callbacks) {
             ToolDefinition def = cb.getToolDefinition();
             Map<String, Object> fn = new LinkedHashMap<>();
             fn.put("name", def.name());
@@ -134,5 +162,9 @@ public class StreamingToolExecutor {
             schemas.add(Map.of("type", "function", "function", fn));
         }
         return schemas;
+    }
+
+    /** 当前请求的工具回调与 Schema */
+    private record RequestTools(List<ToolCallback> callbacks, List<Map<String, Object>> schemas) {
     }
 }
