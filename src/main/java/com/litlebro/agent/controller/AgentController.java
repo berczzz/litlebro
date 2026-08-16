@@ -48,7 +48,8 @@ public class AgentController {
     @PostMapping(value = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
         List<AttachmentInput> attachments = toAttachmentInputs(request.attachments());
-        String answer = agentService.chat(request.question(), request.sessionId(), attachments, request.skillIds());
+        String answer = agentService.chat(request.question(), request.sessionId(), attachments,
+                request.skillIds(), request.mcpServerIds());
         return ChatResponse.of(request.question(), answer, request.sessionId(), null);
     }
 
@@ -57,6 +58,7 @@ public class AgentController {
             @RequestPart("question") String question,
             @RequestPart(value = "sessionId", required = false) String sessionId,
             @RequestPart(value = "skillIds", required = false) String skillIds,
+            @RequestPart(value = "mcpServerIds", required = false) String mcpServerIds,
             @RequestPart(value = "files", required = false) List<MultipartFile> files) {
         List<AttachmentInput> attachments = new ArrayList<>();
         if (files != null) {
@@ -65,18 +67,20 @@ public class AgentController {
             }
         }
         String sid = (sessionId == null || sessionId.isBlank()) ? "default" : sessionId;
-        String answer = agentService.chat(question, sid, attachments, parseSkillIds(skillIds));
+        String answer = agentService.chat(question, sid, attachments,
+                parseIds(skillIds), parseIds(mcpServerIds));
         return ChatResponse.of(question, answer, sid, null);
     }
 
     @PostMapping(value = "/chat/stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@Valid @RequestBody ChatRequest request) {
         List<AttachmentInput> attachments = toAttachmentInputs(request.attachments());
-        // 同步校验技能名单（非法 skillId 转 400）；流式处理在异步线程，无法再映射 HTTP 状态码
-        agentStreamService.validateSkills(request.sessionId(), request.skillIds());
+        // 同步校验技能/MCP 名单（非法 ID 转 400）；流式处理在异步线程，无法再映射 HTTP 状态码
+        agentStreamService.validate(request.sessionId(), request.skillIds(), request.mcpServerIds());
         // 0L 表示不超时：模型思考/长回答耗时可能远超默认 30 秒
         SseEmitter emitter = new SseEmitter(0L);
-        agentStreamService.streamChat(request.question(), request.sessionId(), attachments, request.skillIds(), emitter);
+        agentStreamService.streamChat(request.question(), request.sessionId(), attachments,
+                request.skillIds(), request.mcpServerIds(), emitter);
         return emitter;
     }
 
@@ -85,6 +89,7 @@ public class AgentController {
             @RequestPart("question") String question,
             @RequestPart(value = "sessionId", required = false) String sessionId,
             @RequestPart(value = "skillIds", required = false) String skillIds,
+            @RequestPart(value = "mcpServerIds", required = false) String mcpServerIds,
             @RequestPart(value = "files", required = false) List<MultipartFile> files) {
         List<AttachmentInput> attachments = new ArrayList<>();
         if (files != null) {
@@ -93,18 +98,19 @@ public class AgentController {
             }
         }
         String sid = (sessionId == null || sessionId.isBlank()) ? "default" : sessionId;
-        List<String> ids = parseSkillIds(skillIds);
-        // 同步校验技能名单（非法 skillId 转 400）
-        agentStreamService.validateSkills(sid, ids);
+        List<String> skillIdList = parseIds(skillIds);
+        List<String> mcpServerIdList = parseIds(mcpServerIds);
+        // 同步校验技能/MCP 名单（非法 ID 转 400）
+        agentStreamService.validate(sid, skillIdList, mcpServerIdList);
         SseEmitter emitter = new SseEmitter(0L);
-        agentStreamService.streamChat(question, sid, attachments, ids, emitter);
+        agentStreamService.streamChat(question, sid, attachments, skillIdList, mcpServerIdList, emitter);
         return emitter;
     }
 
     /**
-     * 解析 multipart 传入的技能 ID（逗号分隔字符串，可空）。
+     * 解析 multipart 传入的 ID 列表（逗号分隔字符串，可空）。
      */
-    private List<String> parseSkillIds(String raw) {
+    private List<String> parseIds(String raw) {
         if (raw == null || raw.isBlank()) {
             return List.of();
         }

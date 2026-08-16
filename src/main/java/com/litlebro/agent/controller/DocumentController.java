@@ -1,7 +1,7 @@
 package com.litlebro.agent.controller;
 
 import com.litlebro.agent.dto.DocumentIngestResult;
-import com.litlebro.agent.service.DocumentService;
+import com.litlebro.agent.rag.DocumentService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;

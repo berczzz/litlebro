@@ -8,10 +8,8 @@ import com.litlebro.agent.context.SessionContextHolder;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.model.SessionMemory;
-import com.litlebro.agent.skill.SkillService;
-import com.litlebro.agent.skill.model.SkillDefinition;
 import com.litlebro.agent.tool.ToolRegistry;
-import com.litlebro.agent.tool.skill.SkillTool;
+import com.litlebro.agent.tool.ToolResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -21,7 +19,6 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.Media;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -48,21 +45,21 @@ public class AgentService {
     private final LongTermMemoryService longTermMemoryService;
     private final SessionManager sessionManager;
     private final AttachmentAssembler attachmentAssembler;
-    private final ObjectProvider<SkillService> skillServiceProvider;
+    private final ToolResolver toolResolver;
 
     public AgentService(ChatClient chatClient, ToolRegistry toolRegistry,
                         ContextManager contextManager,
                         LongTermMemoryService longTermMemoryService,
                         SessionManager sessionManager,
                         AttachmentAssembler attachmentAssembler,
-                        ObjectProvider<SkillService> skillServiceProvider) {
+                        ToolResolver toolResolver) {
         this.chatClient = chatClient;
         this.toolRegistry = toolRegistry;
         this.contextManager = contextManager;
         this.longTermMemoryService = longTermMemoryService;
         this.sessionManager = sessionManager;
         this.attachmentAssembler = attachmentAssembler;
-        this.skillServiceProvider = skillServiceProvider;
+        this.toolResolver = toolResolver;
     }
 
     public String chat(String userMessage) {
@@ -78,16 +75,16 @@ public class AgentService {
     }
 
     public String chat(String userMessage, String sessionId, List<AttachmentInput> attachments, List<String> skillIds) {
+        return chat(userMessage, sessionId, attachments, skillIds, List.of());
+    }
+
+    public String chat(String userMessage, String sessionId, List<AttachmentInput> attachments,
+                       List<String> skillIds, List<String> mcpServerIds) {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
         SessionContextHolder.set(sessionId);
         try {
-            // 技能模块开启时，按请求 skillIds 解析可用技能并写入线程上下文（工具回调使用）
-            List<SkillDefinition> usableSkills = List.of();
-            SkillService skillService = skillServiceProvider.getIfAvailable();
-            if (skillService != null) {
-                usableSkills = skillService.resolveUsable(sessionId, skillIds);
-                SessionContextHolder.setSkillIds(usableSkills.stream().map(SkillDefinition::getSkillId).toList());
-            }
+            // 统一解析本次工具集：技能可用名单写入线程上下文（工具内防御鉴权）+ MCP 按会话懒连接 + 提示片段
+            ToolResolver.ResolvedTools resolved = toolResolver.resolve(sessionId, skillIds, mcpServerIds);
 
             // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
             contextManager.restoreContextIfEmpty(sessionId);
@@ -105,15 +102,18 @@ public class AgentService {
                 prompt.user(promptText);
             }
 
-            // 技能模块开启且有可用技能时，注入可用技能片段（已解析：global ∪ 会话绑定 ∪ 请求名单）
-            if (!usableSkills.isEmpty()) {
-                prompt.system(skillService.getSystemPromptFragment(usableSkills));
+            // 技能/MCP 模块有可用能力时，注入对应提示片段（已解析：技能 = global ∪ 会话记录 ∪ 请求名单；
+            // MCP = global ∪ 会话记录，帮助 LLM 理解可用技能与 MCP 服务器）
+            if (!resolved.skillFragment().isBlank()) {
+                prompt.system(resolved.skillFragment());
+            }
+            if (!resolved.mcpFragment().isBlank()) {
+                prompt.system(resolved.mcpFragment());
             }
 
-            // 应用层工具过滤：无可用技能时，技能工具（load_skill/exec_skill/read_skill_file）不进入本次工具列表
-            boolean includeSkillTools = !usableSkills.isEmpty();
+            // 统一工具集：内置/技能经 ToolCallbacks 反射转换 + MCP 前缀化回调，已在 resolver 完成过滤
             ChatResponse response = prompt
-                    .tools(toolRegistry.toToolArray(t -> includeSkillTools || !(t instanceof SkillTool)))
+                    .tools(resolved.tools())
                     .advisors(a -> a.param(MessageChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY, sessionId))
                     .call()
                     .chatResponse();

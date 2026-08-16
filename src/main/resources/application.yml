@@ -191,6 +191,17 @@ app:
       interpreter-allow-list: ${APP_SKILL_EXEC_INTERPRETER_ALLOW_LIST:python3,node,bash,powershell}
     # 静态预注册的技能定义列表（启动时同名跳过，不覆盖动态改动）
     skills: []
+  mcp:
+    # MCP（Model Context Protocol）Client 模块总开关：false 时不装配任何 MCP 组件
+    enabled: ${APP_MCP_ENABLED:false}
+    # MCP 服务器存储（enabled=true 时生效）
+    store:
+      # 存储后端: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
+      type: ${APP_MCP_STORE_TYPE:local}
+    # 单次 MCP 请求超时（毫秒），如 initialize / listTools / callTool
+    request-timeout-ms: ${APP_MCP_REQUEST_TIMEOUT_MS:15000}
+    # 工具列表缓存 TTL（秒）：过期后重新 listTools 刷新该服务器的工具集
+    tool-cache-ttl-seconds: ${APP_MCP_TOOL_CACHE_TTL_SECONDS:60}
 
 server:
   port: 8080

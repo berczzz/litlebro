@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器，拦截所有 Controller 层抛出的异常，
@@ -82,6 +83,20 @@ public class GlobalExceptionHandler {
         log.warn("文件上传超限: {}", ex.getMessage());
         return ResponseEntity.badRequest()
                 .body(ErrorResponse.of(400, "文件过大，单文件最大 " + maxFileSize + "，请压缩后重试"));
+    }
+
+    /**
+     * 处理未知路径（无匹配 Controller 映射且非静态资源）异常。
+     * 返回 404 而非默认的 500 内部错误，避免误导为系统故障。
+     *
+     * @param ex 路径未找到异常
+     * @return 404 错误响应
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(NoResourceFoundException ex) {
+        log.warn("请求路径不存在: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ErrorResponse.of(404, "请求路径不存在: " + ex.getResourcePath()));
     }
 
     /**

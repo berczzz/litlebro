@@ -10,6 +10,10 @@ import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.memory.MessageCodec;
 import com.litlebro.agent.memory.VectorMemoryStore;
 import com.litlebro.agent.memory.external.RedisChatMemory;
+import com.litlebro.agent.mcp.McpServerProperties;
+import com.litlebro.agent.mcp.external.RedisMcpServerStore;
+import com.litlebro.agent.mcp.local.LocalMcpServerStore;
+import com.litlebro.agent.mcp.store.McpServerStore;
 import com.litlebro.agent.rag.DocumentParseCache;
 import com.litlebro.agent.rag.DocumentSplitterFactory;
 import com.litlebro.agent.rag.SemanticTextSplitter;
@@ -71,7 +75,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @Configuration
 @EnableAsync
 @EnableScheduling
-@EnableConfigurationProperties(SkillProperties.class)
+@EnableConfigurationProperties({SkillProperties.class, McpServerProperties.class})
 public class AppConfig {
 
     // ==================== Redis 公共基础设施 ====================
@@ -271,6 +275,27 @@ public class AppConfig {
     @ConditionalOnProperty(name = "app.skill.enabled", havingValue = "true")
     public SkillExecutor skillExecutor() {
         return new LocalSkillExecutor();
+    }
+
+    // ==================== MCP（Model Context Protocol）====================
+
+    /**
+     * MCP 服务器存储由 {@code app.mcp.store.type} 显式决定（{@code app.mcp.enabled=true} 时生效）：
+     * {@code redis} 时写入 Redis（Hash {@code agent:mcp:servers} + {@code agent:mcp:recorded:{sessionId}}，无 TTL），
+     * 重启不丢；{@code local}（默认）时写入本地内存，重启丢失。
+     */
+    @Bean
+    @ConditionalOnExpression("${app.mcp.enabled:false} && '${app.mcp.store.type:local}'.equals('local')")
+    public McpServerStore localMcpServerStore() {
+        return new LocalMcpServerStore();
+    }
+
+    @Bean
+    @ConditionalOnExpression("${app.mcp.enabled:false} && '${app.mcp.store.type:redis}'.equals('redis')")
+    public McpServerStore redisMcpServerStore(
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
+            ObjectMapper objectMapper) {
+        return new RedisMcpServerStore(appRedisTemplate, objectMapper);
     }
 
     // ==================== 业务装配 ====================

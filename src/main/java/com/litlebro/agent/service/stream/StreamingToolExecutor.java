@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.litlebro.agent.dto.StreamEvent;
 import com.litlebro.agent.tool.ToolRegistry;
-import com.litlebro.agent.tool.skill.SkillTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -21,9 +20,9 @@ import java.util.Map;
 /**
  * 流式场景下的工具执行器：组装工具 JSON Schema、按 LLM 返回的工具调用执行并推送事件。
  *
- * <p>工具集按请求动态决定：对话入口通过 {@link #beginRequest(boolean)} 传入本次是否包含技能工具，
- * 组装当前请求的工具回调与 Schema 到 ThreadLocal；工具调用按该请求的工具集解析，
- * 保证与阻塞式对话同一请求同一工具集（技能模块无可用技能时剔除技能工具）。
+ * <p>工具集按请求动态决定：对话入口通过 {@link #beginRequest(List)} 传入本次请求的统一工具回调
+ * （内置/技能/MCP 合并，见 {@link com.litlebro.agent.tool.ToolResolver}），组装当前请求的工具回调与
+ * Schema 到 ThreadLocal；工具调用按该请求的工具集解析，保证与阻塞式对话同一请求同一工具集。
  */
 @Component
 public class StreamingToolExecutor {
@@ -50,14 +49,14 @@ public class StreamingToolExecutor {
     }
 
     /**
-     * 开启一次请求的工具上下文：按本次是否包含技能工具过滤工具集并组装回调与 Schema。
+     * 开启一次请求的工具上下文：设置本次请求的统一工具回调（内置/技能/MCP 已合并完成，
+     * 见 {@link com.litlebro.agent.tool.ToolResolver#resolve}）。
      *
-     * @param includeSkillTools 本次请求是否有可用技能（决定 load_skill/exec_skill/read_skill_file 是否进入工具列表）
+     * @param callbacks 本次请求的工具回调列表，可为空（空时使用默认全量兜底）
      */
-    public void beginRequest(boolean includeSkillTools) {
-        Object[] tools = toolRegistry.toToolArray(t -> includeSkillTools || !(t instanceof SkillTool));
-        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
-        requestTools.set(new RequestTools(callbacks, buildToolSchemas(callbacks)));
+    public void beginRequest(List<ToolCallback> callbacks) {
+        List<ToolCallback> list = callbacks == null ? List.of() : callbacks;
+        requestTools.set(new RequestTools(list, buildToolSchemas(list)));
     }
 
     /** 结束请求的工具上下文，防止线程池复用导致工具集串号 */

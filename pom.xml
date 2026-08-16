@@ -53,6 +53,12 @@
             <artifactId>spring-ai-milvus-store</artifactId>
         </dependency>
 
+        <!-- MCP Client 支持：McpToolUtils 桥接 MCP 服务器工具为 Spring AI ToolCallback（BOM 管理版本） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-mcp</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>

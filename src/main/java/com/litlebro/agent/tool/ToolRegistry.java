@@ -1,5 +1,7 @@
 package com.litlebro.agent.tool;
 
+import com.litlebro.agent.mcp.McpServerService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -37,17 +39,22 @@ public class ToolRegistry {
     private final Map<String, AgentTool> tools;
     /** 工具禁用状态存储（local 内存 / redis 持久，见 {@code app.tool.store.type}） */
     private final ToolDisabledStore disabledStore;
+    /** MCP 服务器服务（模块关闭时为空），用于统一工具池的管理面合并与 MCP 工具 ID 校验 */
+    private final ObjectProvider<McpServerService> mcpServiceProvider;
 
     /**
      * 构造器注入所有 AgentTool 实现，按名称建立索引。
      *
-     * @param toolList      Spring 自动收集的全部工具 Bean
-     * @param disabledStore 工具禁用状态存储
+     * @param toolList          Spring 自动收集的全部工具 Bean
+     * @param disabledStore     工具禁用状态存储
+     * @param mcpServiceProvider MCP 服务器服务（可选，模块由 {@code app.mcp.enabled} 门控）
      */
-    public ToolRegistry(List<AgentTool> toolList, ToolDisabledStore disabledStore) {
+    public ToolRegistry(List<AgentTool> toolList, ToolDisabledStore disabledStore,
+                        ObjectProvider<McpServerService> mcpServiceProvider) {
         this.tools = toolList.stream()
                 .collect(Collectors.toUnmodifiableMap(AgentTool::name, Function.identity()));
         this.disabledStore = disabledStore;
+        this.mcpServiceProvider = mcpServiceProvider;
     }
 
     /**
@@ -133,14 +140,26 @@ public class ToolRegistry {
     }
 
     private void requireTool(String id) {
-        if (getById(id).isEmpty()) {
+        if (getById(id).isEmpty() && !isMcpTool(id)) {
             throw new IllegalArgumentException("工具不存在: " + id);
         }
     }
 
     /**
+     * 指定工具 ID 是否为 MCP 服务器工具（前缀化命名，需该服务器已连接）。
+     *
+     * @param id 工具 ID
+     * @return true 表示是 MCP 工具
+     */
+    private boolean isMcpTool(String id) {
+        McpServerService mcpService = mcpServiceProvider.getIfAvailable();
+        return mcpService != null && mcpService.isServerTool(id);
+    }
+
+    /**
      * 组装工具信息列表（含 ID / 名称 / 描述 / 启用状态），供 {@code GET /api/agent/tools} 使用。
      * 已禁用的工具仍展示（enabled=false），便于界面查看与恢复。
+     * MCP 服务器工具（前缀化命名）在服务器已连接时一并并入，与内置工具同一套展示与禁用体系。
      *
      * @return 工具信息列表
      */
@@ -153,6 +172,10 @@ public class ToolRegistry {
             entry.put("description", tool.description());
             entry.put("enabled", !disabledStore.isDisabled(tool.id()));
             result.add(entry);
+        }
+        McpServerService mcpService = mcpServiceProvider.getIfAvailable();
+        if (mcpService != null) {
+            result.addAll(mcpService.getToolInfoList());
         }
         return result;
     }

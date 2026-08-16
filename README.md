@@ -17,6 +17,7 @@
 - **可插拔工具**：日期时间、会话记忆检索、文档知识库检索、附件读取/检索，LLM 按需自动调用
 - **工具禁用管理**：每个工具启动时生成稳定 ID（类名，跨重启不变），可按 ID 禁用/启用，禁用后不再下发给大模型；禁用状态存储可切换内存 / Redis
 - **技能（Skills）模块**：本地目录技能包，对话按请求 `skillIds` 启用并**自动累加记录**到会话（无过期），LLM 可渐进式加载说明、执行捆绑脚本、读取包内参考文件（默认关闭）
+- **MCP（Model Context Protocol）Client 模块**：注册 stdio / SSE 类型的 MCP 服务器，按请求 `mcpServerIds` 启用并**自动累加记录**到会话，工具经 `{serverId}_` 前缀化后并入统一工具池，LLM 可直接调用（默认关闭）
 - **RAG 文档知识库**：上传 txt/md/json/pdf/docx/xlsx/xls/csv/图片 → 语义/固定切块 → 向量化，LLM 按需检索
 - **附件直传**：对话时可直接携带文件（base64 / URL / multipart），文档类附件懒解析后由 LLM 用工具读取，到期自动清理
 - **两级检索过滤**：向量库宽召回（低阈值）+ 工具层相似度二次过滤（去噪）
@@ -76,7 +77,7 @@ mvn spring-boot:run
 # 对话
 curl -X POST http://localhost:8080/api/agent/chat \
   -H "Content-Type: application/json" \
-  -d '{"question": "今天几号？", "sessionId": "demo-1", "skillIds": ["demo-helper"]}'
+  -d '{"question": "今天几号？", "sessionId": "demo-1", "skillIds": ["demo-helper"], "mcpServerIds": ["echo"]}'
 
 # 工具列表（含 id/name/description/enabled）
 curl http://localhost:8080/api/agent/tools
@@ -99,14 +100,25 @@ curl -X POST http://localhost:8080/api/rag/document \
 
 # 删除文档（docId 为上传返回值）
 curl -X DELETE http://localhost:8080/api/rag/document/{docId}
+
+# 注册 MCP 服务器（stdio 类型，node 启动子进程；模块需开启 app.mcp.enabled=true）
+curl -X POST http://localhost:8080/api/agent/mcp/servers \
+  -H "Content-Type: application/json" \
+  -d '{"serverId":"echo","name":"Echo","description":"echo server","transport":"stdio","command":"node","args":["echo-mcp-server.js"]}'
+
+# MCP 服务器列表
+curl http://localhost:8080/api/agent/mcp/servers
+
+# 验证接入：连接并列出该服务器工具
+curl http://localhost:8080/api/agent/mcp/servers/echo/tools
 ```
 
 ## API 端点
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/agent/chat` | 对话，body: `{"question":"...", "sessionId":"...", "skillIds":["..."], "attachments":[{...}]}`（skillIds 可选，未注册/未启用返回 400；attachments 为 base64/URL） |
-| POST | `/api/agent/chat/multipart` | 对话（multipart），字段 `question`、`sessionId`、`skillIds`（逗号分隔）、`files` |
+| POST | `/api/agent/chat` | 对话，body: `{"question":"...", "sessionId":"...", "skillIds":["..."], "mcpServerIds":["..."], "attachments":[{...}]}`（skillIds / mcpServerIds 可选，未注册/未启用返回 400；attachments 为 base64/URL） |
+| POST | `/api/agent/chat/multipart` | 对话（multipart），字段 `question`、`sessionId`、`skillIds`、`mcpServerIds`（逗号分隔）、`files` |
 | POST | `/api/agent/chat/stream` | 流式对话（SSE），事件：`start`/`reasoning`/`tool_call`/`tool_result`/`content`/`error`/`done`；记忆行为与 `/chat` 一致 |
 | POST | `/api/agent/chat/stream/multipart` | 流式对话（multipart），同上 |
 | GET | `/api/agent/tools` | 工具列表（含 id/name/description/enabled，已禁用工具仍展示 enabled=false） |
@@ -118,6 +130,13 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 | GET | `/api/agent/skills` | 技能列表 |
 | DELETE | `/api/agent/skills/{skillId}` | 删除技能（含全部会话技能记录） |
 | DELETE | `/api/agent/skills/records/{sessionId}` | 清空会话已记录的技能（无过期，需显式清空） |
+| POST | `/api/agent/mcp/servers` | 注册 MCP 服务器（校验 transport/字段，已存在返回 400），body 为 McpServerConfig JSON（serverId/name/description/transport/command/args/env/url/enabled/global） |
+| GET | `/api/agent/mcp/servers` | MCP 服务器列表 |
+| GET | `/api/agent/mcp/servers/{serverId}/tools` | 连接（懒）并列出该服务器工具，用于验证接入 |
+| POST | `/api/agent/mcp/servers/{serverId}/enable` | 启用 MCP 服务器 |
+| POST | `/api/agent/mcp/servers/{serverId}/disable` | 禁用 MCP 服务器（立即关闭连接，会话记录保留） |
+| DELETE | `/api/agent/mcp/servers/{serverId}` | 删除 MCP 服务器（含会话记录，关闭连接） |
+| DELETE | `/api/agent/mcp/records/{sessionId}` | 清空会话已记录的 MCP 服务器（无过期，需显式清空） |
 | POST | `/api/rag/document` | 文档入库，multipart 字段名 `file`（txt/md/json/pdf/docx/xlsx/xls/csv/图片） |
 | DELETE | `/api/rag/document/{docId}` | 按文档 ID 删除全部切块 |
 
@@ -134,6 +153,7 @@ curl -X DELETE http://localhost:8080/api/rag/document/{docId}
 | 附件注册表 | `app.attachment.registry.type` | `LocalAttachmentRegistry`（`local`，重启丢失） | `RedisAttachmentRegistry`（`redis`，TTL 对齐附件过期） |
 | 工具禁用状态 | `app.tool.store.type` | `LocalToolDisabledStore`（`local`，重启丢失） | `RedisToolDisabledStore`（`redis`，无 TTL） |
 | 技能存储 | `app.skill.store.type` | `LocalSkillStore`（`local`，重启丢失） | `RedisSkillStore`（`redis`，记录无 TTL） |
+| MCP 服务器存储 | `app.mcp.store.type` | `LocalMcpServerStore`（`local`，重启丢失） | `RedisMcpServerStore`（`redis`，记录无 TTL） |
 
 **记忆按 sessionId 隔离**，每个会话有独立记忆空间。
 
@@ -178,6 +198,10 @@ app:
 | 技能脚本超时 | `APP_SKILL_EXEC_TIMEOUT_MS`（`app.skill.exec.timeout-ms`） | `30000`（超时强杀） |
 | 技能执行输出上限 | `APP_SKILL_EXEC_OUTPUT_MAX_CHARS`（`app.skill.exec.output-max-chars`） | `8192`（字符，超限截断） |
 | 技能解释器白名单 | `APP_SKILL_EXEC_INTERPRETER_ALLOW_LIST`（`app.skill.exec.interpreter-allow-list`） | `python3,node,bash,powershell` |
+| MCP 模块开关 | `APP_MCP_ENABLED`（`app.mcp.enabled`） | `false`（关闭时 MCP 服务/工具/Controller 不加载） |
+| MCP 服务器存储类型 | `APP_MCP_STORE_TYPE`（`app.mcp.store.type`） | `local`（`local`/`redis`） |
+| MCP 请求超时 | `APP_MCP_REQUEST_TIMEOUT_MS`（`app.mcp.request-timeout-ms`） | `15000`（毫秒，initialize/listTools/callTool） |
+| MCP 工具缓存 TTL | `APP_MCP_TOOL_CACHE_TTL_SECONDS`（`app.mcp.tool-cache-ttl-seconds`） | `60`（秒，过期重新 listTools 刷新） |
 | Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
 | Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
 
@@ -243,8 +267,9 @@ app:
 | `LoadSkillTool` | `load_skill` | 读取技能包 SKILL.md（随技能模块开关加载） |
 | `ExecSkillTool` | `exec_skill` | 执行技能捆绑脚本（随技能模块开关加载） |
 | `ReadSkillFileTool` | `read_skill_file` | 读取技能包内参考文件（随技能模块开关加载） |
+| MCP 服务器工具 | `{serverId}_工具名` | 由 MCP 模块按需接入（随模块开关加载，服务器连接后出现在工具列表） |
 
-新增工具只需实现 `AgentTool` 接口（含默认 `id()`，取类名首字母小写，跨重启稳定）并声明为 Bean，即可被 `ToolRegistry` 自动收集。
+新增工具只需实现 `AgentTool` 接口（含默认 `id()`，取类名首字母小写，跨重启稳定）并声明为 Bean，即可被 `ToolRegistry` 自动收集；MCP 工具则经前缀化并入同一工具池。
 
 ### 工具禁用管理
 
@@ -266,6 +291,18 @@ app:
 - **解释器判定三层**：SkillDefinition.interpreterMap 显式覆盖 → 扩展名映射（py→python3/js→node/sh→bash/ps1→powershell；exe/cmd/bat/jar 直接执行）→ shebang 兜底 → 结果须在白名单；Windows 自动映射 python3→python
 - **安全边界**：skillId/scriptName 拒绝路径分隔符与 `..`；技能目录归一化后必须落在根目录内；脚本执行开关 `app.skill.exec.enabled` 默认关闭；v1 无沙箱（脚本以应用同权限运行）
 
+## MCP（Model Context Protocol）Client 模块
+
+注册 MCP 服务器并让 LLM 直接调用其工具，默认关闭（`app.mcp.enabled=true` 开启）：
+
+- **服务器注册**：REST 注册 stdio / SSE 两种传输的服务器；stdio 启动本地子进程（command + args + env），SSE 连接远端 url；注册只持久化配置，不建立连接（**懒连接**，首次会话使用该服务器工具时才连，stdio 同时拉起子进程）
+- **按请求启用 + 自动记录**：对话请求携带 `mcpServerIds`，应用层校验后**累加记录**到该会话（无过期时间）；可用服务器 = `global 服务器 ∪ 会话已记录服务器 ∪ 请求 mcpServerIds`；同一会话后续请求无需再携带；未注册/未启用的 serverId 直接返回 400（流式端点在控制器同步校验）
+- **显式清空**：`DELETE /api/agent/mcp/records/{sessionId}` 清空会话记录，清空后仅剩 global 服务器
+- **前缀化并入统一工具池**：工具经 `{serverId}_工具名` 前缀命名后并入统一工具池，出现在 `GET /api/agent/tools`，与内置工具共用 `ToolDisabledStore` 按前缀 ID 禁用/启用
+- **统一工具集（阻塞式与流式一致）**：`ToolResolver` 一次解析出本次请求的统一 `List<ToolCallback>`（内置/技能经 `ToolCallbacks.from` 反射转换 + MCP 回调追加），阻塞式走 `ChatClient.tools(List)`、流式走 `StreamingToolExecutor.beginRequest(List)`，两链路工具集完全一致
+- **连接管理**：每服务器一把锁防并发首用重复拉起子进程；工具列表按 `app.mcp.tool-cache-ttl-seconds` 刷新；删除/禁用服务器或应用退出时关闭连接（stdio 结束子进程）；连接失败仅跳过该服务器，不影响其他服务器与本请求
+- **SDK 依赖**：`spring-ai-mcp`（BOM 管 1.0.0-M6）传递引入 MCP Java SDK `io.modelcontextprotocol.sdk:mcp:0.7.0`；stdio 用 `StdioClientTransport(ServerParameters)`，SSE 用 `HttpClientSseClientTransport(url)`（0.7.0 不支持 SSE 请求头）
+
 ## 项目结构
 
 ```
@@ -276,7 +313,8 @@ src/main/java/com/litlebro/agent/
 │   ├── ToolController.java         # 工具列表 / 按 ID 禁用与恢复（/api/agent/tools）
 │   ├── SessionController.java      # 会话状态查询（/api/agent/session/{id}）
 │   ├── MemoryController.java       # 会话长期记忆查询（/api/agent/memory/{id}）
-│   └── DocumentController.java     # 文档知识库上传 / 删除
+│   ├── DocumentController.java     # 文档知识库上传 / 删除
+│   └── McpController.java          # MCP 服务器管理（/api/agent/mcp，随模块开关加载）
 ├── service/                        # 业务核心
 │   ├── AgentService.java           # 协调 LLM、工具、记忆、压缩
 │   ├── AgentStreamService.java     # 流式对话编排（SSE）
@@ -306,7 +344,8 @@ src/main/java/com/litlebro/agent/
 │   └── external/RedisSessionManager.java # Redis 实现（30 分钟 TTL）
 ├── tool/                           # LLM 可调用工具
 │   ├── AgentTool.java              # 工具抽象接口（含默认 id()：类名首字母小写，跨重启稳定）
-│   ├── ToolRegistry.java           # 工具注册表（按谓词过滤工具集；按 ID 禁用/启用）
+│   ├── ToolRegistry.java           # 工具注册表（按谓词过滤工具集；按 ID 禁用/启用；MCP 工具并入管理面）
+│   ├── ToolResolver.java           # 会话级统一工具解析器（内置/技能 + MCP 合并为 List<ToolCallback>）
 │   ├── ToolDisabledStore.java      # 工具禁用状态存储抽象接口
 │   ├── local/LocalToolDisabledStore.java   # 禁用状态内存实现（默认）
 │   ├── external/RedisToolDisabledStore.java # 禁用状态 Redis 实现（无 TTL）
@@ -321,6 +360,15 @@ src/main/java/com/litlebro/agent/
 │       ├── LoadSkillTool.java               # load_skill
 │       ├── ExecSkillTool.java               # exec_skill
 │       └── ReadSkillFileTool.java           # read_skill_file
+├── mcp/                            # MCP（Model Context Protocol）Client 模块（@ConditionalOnProperty(app.mcp.enabled) 门控）
+│   ├── McpServerService.java       # 注册/删除/列表/会话记录/工具回调解析/系统提示片段
+│   ├── McpConnectionManager.java   # 懒连接 + 每服务器锁 + 工具缓存 TTL 刷新 + 关闭
+│   ├── McpToolCallback.java        # 前缀化工具适配器（serverId_tool，call 委托）
+│   ├── McpServerProperties.java    # 配置绑定（app.mcp.*）
+│   ├── model/McpServerConfig.java  # 服务器定义（transport/command/args/env/url/enabled/global）
+│   ├── store/McpServerStore.java   # 服务器存储抽象（定义 CRUD + 会话记录）
+│   ├── local/LocalMcpServerStore.java  # 本地内存实现（默认，记录无 TTL）
+│   └── external/RedisMcpServerStore.java # Redis 实现（记录无 TTL，重启不丢）
 ├── skill/                          # 技能（Skills）模块（@ConditionalOnProperty(app.skill.enabled) 门控）
 │   ├── SkillService.java           # 注册校验/静态预注册/记录鉴权/解释器判定/编排
 │   ├── SkillProperties.java        # 配置绑定（app.skill.*）
@@ -360,11 +408,11 @@ src/main/java/com/litlebro/agent/
 │       ├── ImageDocumentParser.java  # 图片（png/jpg/jpeg/gif/webp/bmp）
 │       └── VisionDescribeService.java # 图片视觉描述（dashscope qwen-vl）
 ├── dto/                            # 请求/响应结构
-│   ├── ChatRequest.java            # question + sessionId + skillIds + attachments
+│   ├── ChatRequest.java            # question + sessionId + skillIds + mcpServerIds + attachments
 │   ├── ChatResponse.java
 │   ├── ErrorResponse.java
 │   └── DocumentIngestResult.java   # 文档入库结果
-└── exception/GlobalExceptionHandler.java
+└── exception/GlobalExceptionHandler.java  # 全局异常处理（400/404/500 统一错误结构）
 ```
 
 ## 开发约定
