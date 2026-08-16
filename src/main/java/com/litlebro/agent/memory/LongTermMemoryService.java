@@ -65,19 +65,37 @@ public class LongTermMemoryService {
     }
 
     /**
-     * 将一条对话消息持久化到长期记忆。
+     * 将一次对话的用户/助手消息合并持久化到长期记忆。
      *
      * <p>异步执行（{@code ltmTaskExecutor} 线程池），避免 embedding + 向量入库
      * 阻塞对话输出（流式场景下保证 done 事件不被拖慢）。
+     *
+     * <p>两条消息合并为一次向量化请求写入，减少 embedding HTTP 调用次数。
+     * 助手消息为空（如中途失败）时仅保存用户消息。
      */
     @Async("ltmTaskExecutor")
-    public void saveChat(String sessionId, String chatContent, String role, int costTokens) {
-        if (chatContent == null || chatContent.isBlank()) {
+    public void saveChats(String sessionId, String userContent, String assistantContent,
+                          int userCostTokens, int assistantCostTokens) {
+        long now = System.currentTimeMillis();
+        List<AgentMessage> messages = new ArrayList<>(2);
+        if (userContent != null && !userContent.isBlank()) {
+            messages.add(buildChatMessage(sessionId, userContent, ChatContentRole.USER_ROLE, userCostTokens, now));
+        }
+        // 助手消息时间戳 +1ms，保证按 createdAt 恢复上下文时 user 恒在 assistant 之前
+        if (assistantContent != null && !assistantContent.isBlank()) {
+            messages.add(buildChatMessage(sessionId, assistantContent, ChatContentRole.ASSISTANT_ROLE, assistantCostTokens, now + 1));
+        }
+        if (messages.isEmpty()) {
             return;
         }
+        vectorMemoryStore.saveAll(messages);
+        log.debug("会话记录已批量存入向量库 sessionId={} count={}", sessionId, messages.size());
+    }
+
+    private AgentMessage buildChatMessage(String sessionId, String chatContent, String role, int costTokens, long createdAt) {
         HashMap<String, Object> map = new HashMap<>();
         map.put(Constant.SUMMARY_COST, costTokens);
-        AgentMessage am = new AgentMessage(
+        return new AgentMessage(
                 UUID.randomUUID().toString().replace("-", ""),
                 sessionId,
                 Constant.CATEGORY_CHAT,
@@ -88,10 +106,8 @@ public class LongTermMemoryService {
                 List.of(),
                 List.of(),
                 List.of(),
-                System.currentTimeMillis()
+                createdAt
         );
-        vectorMemoryStore.save(am);
-        log.debug("会话记录已存入向量库 sessionId={} role={}", sessionId, role);
     }
 
     public String getLatestSummary(String sessionId) {

@@ -62,6 +62,37 @@ public class VectorMemoryStore implements MemoryStore {
 
     @Override
     public void save(AgentMessage agentMessage) {
+        saveAll(List.of(agentMessage));
+    }
+
+    /**
+     * 批量存储多条记忆，合并为单次向量化请求写入向量库，
+     * 减少 embedding HTTP 调用次数（一次对话的用户/助手消息合并入库）。
+     */
+    public void saveAll(List<AgentMessage> agentMessages) {
+        if (CollectionUtils.isEmpty(agentMessages)) {
+            return;
+        }
+        try {
+            List<Document> docs = new ArrayList<>(agentMessages.size());
+            for (AgentMessage am : agentMessages) {
+                Document doc = toDocument(am);
+                if (doc != null) {
+                    docs.add(doc);
+                }
+            }
+            if (docs.isEmpty()) {
+                return;
+            }
+            vectorStore.add(docs);
+            log.debug("向量记忆已批量存储 count={}", docs.size());
+        } catch (Exception e) {
+            log.warn("向量记忆存储失败，已跳过写入 原因: {}", e.getMessage());
+        }
+    }
+
+    /** 将统一记忆实体转为向量库 Document；构建失败返回 null 由调用方跳过。 */
+    private Document toDocument(AgentMessage agentMessage) {
         try {
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put(Constant.MD_ID, agentMessage.id());
@@ -86,15 +117,13 @@ public class VectorMemoryStore implements MemoryStore {
                 metadata.put(Constant.MD_TOOL_RESPONSES, OBJECT_MAPPER.writeValueAsString(agentMessage.toolResponses()));
             }
 
-            Document doc = Document.builder()
+            return Document.builder()
                     .text(agentMessage.text())
                     .metadata(metadata)
                     .build();
-            vectorStore.add(List.of(doc));
-            log.debug("向量记忆已存储 sessionId={} category={} id={}", agentMessage.sessionId(), agentMessage.category(), agentMessage.id());
         } catch (Exception e) {
-            log.warn("向量记忆存储失败，已跳过写入 sessionId={} category={} 原因: {}",
-                    agentMessage.sessionId(), agentMessage.category(), e.getMessage());
+            log.warn("向量记忆消息构建失败，已跳过 原因: {}", e.getMessage());
+            return null;
         }
     }
 

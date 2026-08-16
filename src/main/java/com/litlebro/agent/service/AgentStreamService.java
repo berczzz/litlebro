@@ -2,7 +2,6 @@ package com.litlebro.agent.service;
 
 import com.litlebro.agent.attachment.AttachmentAssembler;
 import com.litlebro.agent.attachment.resolver.AttachmentInput;
-import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.context.SessionContextHolder;
@@ -174,10 +173,7 @@ public class AgentStreamService {
             }
             sessionManager.updateSession(sessionId, model, totalPrompt, totalCompletion);
             // 长期记忆异步持久化，不阻塞 done 事件输出
-            longTermMemoryService.saveChat(sessionId, userContent.promptText(), ChatContentRole.USER_ROLE, totalPrompt);
-            if (!finalAnswer.isBlank()) {
-                longTermMemoryService.saveChat(sessionId, finalAnswer, ChatContentRole.ASSISTANT_ROLE, totalCompletion);
-            }
+            longTermMemoryService.saveChats(sessionId, userContent.promptText(), finalAnswer, totalPrompt, totalCompletion);
             contextManager.compactIfNeeded(sessionId);
 
             StreamEventSender.send(emitter, StreamEvent.TYPE_DONE,

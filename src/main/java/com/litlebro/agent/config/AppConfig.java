@@ -200,7 +200,7 @@ public class AppConfig {
     // ==================== 异步任务 ====================
 
     /**
-     * 长期记忆持久化专用线程池：{@code @Async("ltmTaskExecutor")} 的 saveChat 在此执行，
+     * 长期记忆持久化专用线程池：{@code @Async("ltmTaskExecutor")} 的 saveChats 在此执行，
      * 避免 embedding + 向量入库阻塞对话输出。
      */
     @Bean

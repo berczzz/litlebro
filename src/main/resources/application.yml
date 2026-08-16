@@ -24,10 +24,12 @@ spring:
   ai:
     openai:
       api-key: ${OPEN_AI_API_KEY:''}
-      base-url: ${OPEN_AI_BASE_URL:https://ms-ens-fa365593-e91c.api-inference.modelscope.cn/v1}
+      # 注意：Spring AI 会在 base-url 后自动拼接 /v1/chat/completions（chat）与 /v1/embeddings（embedding），
+      # 因此 base-url 一律不要带尾部 /v1
+      base-url: ${OPEN_AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
       chat:
         options:
-          model: Qwen/Qwen3-4B
+          model: ${OPEN_AI_BASE_MODEL:qwen3.8-max}
           temperature: 0.7
           max-tokens: 131072
       embedding:

@@ -2,7 +2,6 @@ package com.litlebro.agent.service;
 
 import com.litlebro.agent.attachment.AttachmentAssembler;
 import com.litlebro.agent.attachment.resolver.AttachmentInput;
-import com.litlebro.agent.common.ChatContentRole;
 import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.context.ContextManager;
 import com.litlebro.agent.context.SessionContextHolder;
@@ -110,8 +109,7 @@ public class AgentService {
 
                 sessionManager.updateSession(sessionId, model, promptTokens, completionTokens);
 
-                longTermMemoryService.saveChat(sessionId, promptText, ChatContentRole.USER_ROLE, promptTokens);
-                longTermMemoryService.saveChat(sessionId, content, ChatContentRole.ASSISTANT_ROLE, completionTokens);
+                longTermMemoryService.saveChats(sessionId, promptText, content, promptTokens, completionTokens);
             }
 
             // 当前会话信息超出上下文配置 则进行压缩
