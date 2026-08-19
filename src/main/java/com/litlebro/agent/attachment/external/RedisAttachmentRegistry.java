@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>单条条目以 {@code agent:attachment:<fileId>} 为 key 存储 JSON，TTL 与附件过期时间对齐</li>
  *   <li>索引集合 {@code agent:attachment:index} 记录全部 fileId，供 {@link #all()} 枚举</li>
+ *   <li>会话索引集合 {@code agent:attachment:session:<sessionId>} 记录该会话名下 fileId，
+ *       供 {@link #bySession} 直接命中（register/remove 时同步维护，避免请求路径全库扫描）</li>
  *   <li>Path 字段以字符串存储（Jackson 默认不支持 Path 序列化）</li>
  * </ul>
  */
@@ -35,6 +37,8 @@ public class RedisAttachmentRegistry implements AttachmentRegistry {
     private static final String KEY_PREFIX = "agent:attachment:";
     /** 附件 fileId 索引集合 key */
     private static final String INDEX_KEY = "agent:attachment:index";
+    /** 会话附件索引集合 key 前缀（后接 sessionId） */
+    private static final String SESSION_INDEX_PREFIX = "agent:attachment:session:";
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -52,6 +56,9 @@ public class RedisAttachmentRegistry implements AttachmentRegistry {
             long ttlMillis = Math.max(1, entry.expiresAt() - System.currentTimeMillis());
             redisTemplate.opsForValue().set(key, json, ttlMillis, TimeUnit.MILLISECONDS);
             redisTemplate.opsForSet().add(INDEX_KEY, entry.fileId());
+            if (entry.sessionId() != null) {
+                redisTemplate.opsForSet().add(SESSION_INDEX_PREFIX + entry.sessionId(), entry.fileId());
+            }
             log.debug("附件已写入 Redis fileId={} name={} expiresAt={}", entry.fileId(), entry.name(), entry.expiresAt());
         } catch (Exception e) {
             log.warn("附件写入 Redis 失败 fileId={} 原因: {}", entry.fileId(), e.getMessage());
@@ -80,6 +87,9 @@ public class RedisAttachmentRegistry implements AttachmentRegistry {
         try {
             redisTemplate.delete(KEY_PREFIX + fileId);
             redisTemplate.opsForSet().remove(INDEX_KEY, fileId);
+            if (removed != null && removed.sessionId() != null) {
+                redisTemplate.opsForSet().remove(SESSION_INDEX_PREFIX + removed.sessionId(), fileId);
+            }
         } catch (Exception e) {
             log.warn("附件移除 Redis 失败 fileId={} 原因: {}", fileId, e.getMessage());
         }
@@ -121,6 +131,32 @@ public class RedisAttachmentRegistry implements AttachmentRegistry {
             log.warn("附件数量读取 Redis 失败 原因: {}", e.getMessage());
             return 0;
         }
+    }
+
+    @Override
+    public List<AttachmentEntry> bySession(String sessionId) {
+        List<AttachmentEntry> result = new ArrayList<>();
+        if (sessionId == null) {
+            return result;
+        }
+        try {
+            Set<Object> ids = redisTemplate.opsForSet().members(SESSION_INDEX_PREFIX + sessionId);
+            if (ids == null) {
+                return result;
+            }
+            for (Object id : ids) {
+                if (id == null) {
+                    continue;
+                }
+                AttachmentEntry entry = get(id.toString());
+                if (entry != null) {
+                    result.add(entry);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("附件按会话查询 Redis 失败 sessionId={} 原因: {}", sessionId, e.getMessage());
+        }
+        return result;
     }
 
     private Map<String, Object> toMap(AttachmentEntry entry) {

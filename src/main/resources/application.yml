@@ -170,6 +170,28 @@ app:
     store:
       # 存储后端: local(默认, 本地内存, 重启丢失) | redis（Redis, 重启不丢）
       type: ${APP_TOOL_STORE_TYPE:local}
+  router:
+    # 检索前路由层总开关：false 时路由不生效，search_memory/search_document 常驻（退回旧行为）
+    enabled: ${APP_ROUTER_ENABLED:true}
+    # 歧义词（文档/文件/数据等）是否启用轻量 LLM 兜底分类；false 时歧义词一律默认 both（保召回）
+    llm-fallback: ${APP_ROUTER_LLM_FALLBACK:true}
+    # 喂给路由器的最近对话历史条数，用于消解"这个/那份"等指代
+    history-size: ${APP_ROUTER_HISTORY_SIZE:6}
+    # 路由专用 LLM（OpenAI 兼容端点，可独立指向 qwen/DeepSeek）；空值回落主对话配置
+    llm:
+      base-url: ${APP_ROUTER_LLM_BASE_URL:}
+      api-key: ${APP_ROUTER_LLM_API_KEY:}
+      model: ${APP_ROUTER_LLM_MODEL:}
+      temperature: ${APP_ROUTER_LLM_TEMPERATURE:0.0}
+      max-tokens: ${APP_ROUTER_LLM_MAX_TOKENS:256}
+    # 强文档知识库指示词：命中即硬路由 document
+    strong-document-keywords: ["知识库", "文档库", "之前上传的文档", "上传到知识库", "全局文档", "库里有没有", "知识库里有"]
+    # 强会话记忆指示词：命中即硬路由 memory
+    strong-memory-keywords: ["之前", "刚才", "你说过", "你答过", "我们聊过", "上次", "记得吗", "上一轮", "前面说过"]
+    # 弱/歧义检索词：不硬路由，走 LLM 兜底或默认 both
+    weak-keywords: ["文档", "文件", "数据", "报表", "资料", "记录", "手册", "报告", "内容", "信息", "查询", "查一下", "查查", "检索", "看看", "里面的", "里写", "中提到", "提到"]
+    # 附件指代词：本次带附件且问题命中时优先判定为附件问题（不拉全局检索库）
+    attachment-ref-words: ["附件", "这个文档", "这份", "上传的文件", "上传的", "我刚发的", "我发的", "随消息"]
   skill:
     # 技能（Skills）模块总开关：false 时 SkillService/工具/Controller 全部不加载
     enabled: ${APP_SKILL_ENABLED:false}

@@ -43,7 +43,7 @@ public class ReadFileTool implements AgentTool {
 
     @Override
     public String description() {
-        return "读取用户随消息上传的附件文件（txt/pdf/word/excel 等）指定行范围的内容";
+        return "读取用户随消息上传的附件文件（txt/pdf/word/excel 等）指定行范围的内容；仅作用于本次上传的附件，与全局文档知识库无关";
     }
 
     /**
@@ -54,7 +54,7 @@ public class ReadFileTool implements AgentTool {
      * @param endLine   结束行号（含），超出文件末尾时自动收拢
      * @return 带行号标注的文本内容
      */
-    @Tool(name = "read_file", description = "读取随消息上传的附件文件内容。当用户上传了文档/文本类附件并需要读取其中内容时调用，可指定行范围切片读取；单次最多读取 500 行，超出自动截断并提示续读位置，建议小范围多次读取")
+    @Tool(name = "read_file", description = "读取随消息上传的附件文件内容。当用户上传了文档/文本类附件并需要读取其中内容时调用，可指定行范围切片读取；单次最多读取 500 行，超出自动截断并提示续读位置，建议小范围多次读取。注意：本工具只读取本次随消息上传的附件，不检索全局文档知识库（那是 search_document 的职责）")
     public String readFile(
             @ToolParam(description = "附件唯一标识 fileId，随消息一起提供") String fileId,
             @ToolParam(description = "起始行号（从 1 开始）") int startLine,

@@ -19,6 +19,7 @@ import com.litlebro.agent.rag.DocumentSplitterFactory;
 import com.litlebro.agent.rag.SemanticTextSplitter;
 import com.litlebro.agent.rag.external.RedisDocumentParseCache;
 import com.litlebro.agent.rag.local.LocalDocumentParseCache;
+import com.litlebro.agent.router.RouterProperties;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.external.RedisSessionManager;
 import com.litlebro.agent.session.local.LocalSessionManager;
@@ -41,6 +42,9 @@ import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemory;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.milvus.MilvusVectorStore;
@@ -60,6 +64,7 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.util.StringUtils;
 
 /**
  * 全局 Bean 装配中心。
@@ -75,7 +80,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @Configuration
 @EnableAsync
 @EnableScheduling
-@EnableConfigurationProperties({SkillProperties.class, McpServerProperties.class})
+@EnableConfigurationProperties({SkillProperties.class, McpServerProperties.class, RouterProperties.class})
 public class AppConfig {
 
     // ==================== Redis 公共基础设施 ====================
@@ -299,6 +304,42 @@ public class AppConfig {
     }
 
     // ==================== 业务装配 ====================
+
+    /**
+     * 检索路由专用 ChatClient：仅在路由层启用且歧义词启用 LLM 兜底时装配。
+     *
+     * <p>独立构建 OpenAI 兼容端点（可与主对话端点不同，如 qwen/DeepSeek），
+     * 三项配置空值回落主对话配置（base-url→{@code spring.ai.openai.base-url}，
+     * api-key→{@code spring.ai.openai.api-key}，model→{@code spring.ai.openai.chat.options.model}），
+     * 便于只声明 base-url 而复用主 Key/模型。
+     *
+     * <p>路由任务只需输出一个短 JSON，故固定低温、短 max-tokens，成本远低于主对话。
+     */
+    @Bean("routerChatClient")
+    @ConditionalOnExpression("${app.router.enabled:true} && ${app.router.llm-fallback:true}")
+    public ChatClient routerChatClient(
+            RouterProperties props,
+            @Value("${spring.ai.openai.base-url:}") String mainBaseUrl,
+            @Value("${spring.ai.openai.api-key:}") String mainApiKey,
+            @Value("${spring.ai.openai.chat.options.model:}") String mainModel) {
+        RouterProperties.Llm llm = props.getLlm();
+        String baseUrl = StringUtils.hasText(llm.getBaseUrl()) ? llm.getBaseUrl() : mainBaseUrl;
+        String apiKey = StringUtils.hasText(llm.getApiKey()) ? llm.getApiKey() : mainApiKey;
+        String model = StringUtils.hasText(llm.getModel()) ? llm.getModel() : mainModel;
+
+        OpenAiApi.Builder apiBuilder = OpenAiApi.builder().baseUrl(baseUrl);
+        // 空 apiKey 不设置，避免 Builder 校验抛异常（如仅配 base-url 复用主 Key 场景）
+        if (StringUtils.hasText(apiKey)) {
+            apiBuilder.apiKey(apiKey);
+        }
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .model(model)
+                .temperature(llm.getTemperature())
+                .maxTokens(llm.getMaxTokens())
+                .build();
+        OpenAiChatModel chatModel = new OpenAiChatModel(apiBuilder.build(), options);
+        return ChatClient.builder(chatModel).build();
+    }
 
     // ==================== 异步任务 ====================
 

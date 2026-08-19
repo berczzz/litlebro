@@ -44,7 +44,7 @@ public class SearchDocumentTool implements AgentTool {
 
     @Override
     public String description() {
-        return "检索用户上传的文档知识库，查看上传文件/数据内容时使用";
+        return "检索用户上传的文档知识库，查看上传文件/数据内容时使用；不含本次随消息上传的附件与会话对话记录";
     }
 
     /**
@@ -53,7 +53,7 @@ public class SearchDocumentTool implements AgentTool {
      * @param query 检索词，描述想查找的文档内容
      * @return 命中的文档片段文本（含来源文件名），无结果时返回提示语
      */
-    @Tool(name = "search_document", description = "检索用户上传的文档知识库（全局共享，不区分会话），返回与检索词相关的文档内容片段及来源文件名。用户上传的报表、文件、数据、资料等全部内容均存储于此；需要查看上传文件数据内容的问题，直接调用本工具")
+    @Tool(name = "search_document", description = "检索用户上传的文档知识库（全局共享，不区分会话），返回与检索词相关的文档内容片段及来源文件名。适用场景：用户此前上传到知识库的文档/报表/文件/数据内容。禁用场景（请勿调用）：a) 用户提及'之前/刚才/你说过'等会话历史，此类请用 search_memory；b) 用户引用本次随消息上传的附件（'这个文档/附件/这份'），此类请用 read_file/grep_file；c) 无关闲聊无需检索")
     public String searchDocument(
             @ToolParam(description = "检索描述：将用户问题改写为完整的查询描述（包含核心对象与要查找的信息），不要只截取几个关键词，描述越完整检索命中率越高") String query) {
         log.info("searchDocument执行开始：{}",query);

@@ -43,7 +43,7 @@ public class GrepFileTool implements AgentTool {
 
     @Override
     public String description() {
-        return "在用户上传的附件文件中按正则表达式检索内容，返回带行号的匹配行";
+        return "在用户上传的附件文件中按正则表达式检索内容，返回带行号的匹配行；仅作用于本次上传的附件，与全局文档知识库无关";
     }
 
     /**
@@ -54,7 +54,7 @@ public class GrepFileTool implements AgentTool {
      * @param maxLines 最多返回的匹配行数（超出截断），可不传使用默认值
      * @return 带行号的匹配内容
      */
-    @Tool(name = "grep_file", description = "在随消息上传的附件文件中按正则表达式检索内容，返回带行号的匹配行。适合在长文档中快速定位关键词位置，单次最多返回 500 行，超出自动截断并提示，建议使用精确正则小范围检索")
+    @Tool(name = "grep_file", description = "在随消息上传的附件文件中按正则表达式检索内容，返回带行号的匹配行。适合在长文档中快速定位关键词位置，单次最多返回 500 行，超出自动截断并提示，建议使用精确正则小范围检索。注意：本工具只检索本次随消息上传的附件，不检索全局文档知识库（那是 search_document 的职责）")
     public String grepFile(
             @ToolParam(description = "附件唯一标识 fileId，随消息一起提供") String fileId,
             @ToolParam(description = "正则表达式，用于匹配附件内容中的目标文本") String pattern,

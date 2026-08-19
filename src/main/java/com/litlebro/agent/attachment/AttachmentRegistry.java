@@ -52,4 +52,16 @@ public interface AttachmentRegistry {
      * @return 数量
      */
     int size();
+
+    /**
+     * 按会话查询其名下全部存活附件条目（快照副本）。
+     *
+     * <p>实现应维护「sessionId → fileId 集合」的索引（register/remove 时同步），
+     * 避免每次请求全库扫描 {@link #all()}——附件多、会话多时全库扫描会随总量线性劣化。
+     * 查询结果跳过已过期/已移除的条目（与 {@link #all()} 语义一致）。
+     *
+     * @param sessionId 会话标识
+     * @return 该会话名下存活的附件条目列表
+     */
+    List<AttachmentEntry> bySession(String sessionId);
 }

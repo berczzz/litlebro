@@ -83,16 +83,18 @@ public class AgentService {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
         SessionContextHolder.set(sessionId);
         try {
-            // 统一解析本次工具集：技能可用名单写入线程上下文（工具内防御鉴权）+ MCP 按会话懒连接 + 提示片段
-            ToolResolver.ResolvedTools resolved = toolResolver.resolve(sessionId, skillIds, mcpServerIds);
-
             // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
             contextManager.restoreContextIfEmpty(sessionId);
 
             // 处理附件：图片直传 Media，文档/文本落盘登记 fileId 供 LLM 工具读取
+            // 必须先于 resolve：附件工具的暴露与检索路由的附件判定都依赖已登记的 fileId 注册表
             AttachmentAssembler.Result assembled = attachmentAssembler.build(userMessage, sessionId, attachments);
             List<Media> mediaList = assembled.media();
             String promptText = assembled.promptText();
+
+            // 统一解析本次工具集：技能可用名单写入线程上下文（工具内防御鉴权）+ MCP 按会话懒连接 +
+            // 检索路由判定（按问题/历史/已登记附件 fileId 剔除不适用检索工具）+ 提示片段
+            ToolResolver.ResolvedTools resolved = toolResolver.resolve(sessionId, skillIds, mcpServerIds, userMessage);
 
             ChatClient.ChatClientRequestSpec prompt = chatClient.prompt();
             if (!mediaList.isEmpty()) {
@@ -109,6 +111,9 @@ public class AgentService {
             }
             if (!resolved.mcpFragment().isBlank()) {
                 prompt.system(resolved.mcpFragment());
+            }
+            if (!resolved.routingFragment().isBlank()) {
+                prompt.system(resolved.routingFragment());
             }
 
             // 统一工具集：内置/技能经 ToolCallbacks 反射转换 + MCP 前缀化回调，已在 resolver 完成过滤

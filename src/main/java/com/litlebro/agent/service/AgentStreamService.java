@@ -144,13 +144,18 @@ public class AgentStreamService {
         try {
             String model = sseClient.getModel();
 
-            // 统一解析本次工具集：技能可用名单写入线程上下文（工具内防御鉴权）+ MCP 按会话懒连接 + 提示片段
-            ToolResolver.ResolvedTools resolved = toolResolver.resolve(sessionId, skillIds, mcpServerIds);
-
             // 1. 短期记忆为空时，从长期记忆回注最新摘要与增量消息，找回历史
             contextManager.restoreContextIfEmpty(sessionId);
 
-            // 2. 组装消息：system 提示词 + 可用能力片段 + 短期记忆历史 + 用户消息（含附件）
+            // 2. 处理附件：图片直传 Media，文档/文本落盘登记 fileId 供 LLM 工具读取
+            // 必须先于 resolve：附件工具的暴露与检索路由的附件判定都依赖已登记的 fileId 注册表
+            AttachmentAssembler.Result userContent = attachmentAssembler.build(userMessage, sessionId, attachments);
+
+            // 统一解析本次工具集：技能可用名单写入线程上下文（工具内防御鉴权）+ MCP 按会话懒连接 +
+            // 检索路由判定（按问题/历史/已登记附件 fileId 剔除不适用检索工具）+ 提示片段
+            ToolResolver.ResolvedTools resolved = toolResolver.resolve(sessionId, skillIds, mcpServerIds, userMessage);
+
+            // 3. 组装消息：system 提示词 + 可用能力片段 + 短期记忆历史 + 用户消息（含附件）
             List<Map<String, Object>> messages = new ArrayList<>();
             messages.add(Map.of("role", "system", "content", SystemPrompt.GENERAL));
             // 技能/MCP 模块有可用能力时，注入对应提示片段
@@ -160,13 +165,15 @@ public class AgentStreamService {
             if (!resolved.mcpFragment().isBlank()) {
                 messages.add(Map.of("role", "system", "content", resolved.mcpFragment()));
             }
+            if (!resolved.routingFragment().isBlank()) {
+                messages.add(Map.of("role", "system", "content", resolved.routingFragment()));
+            }
             List<Message> history = chatMemory.get(sessionId, Integer.MAX_VALUE);
             if (history != null) {
                 for (Message m : history) {
                     messages.add(messageConverter.toOpenAiMessage(m));
                 }
             }
-            AttachmentAssembler.Result userContent = attachmentAssembler.build(userMessage, sessionId, attachments);
             Map<String, Object> userMsg = new LinkedHashMap<>();
             userMsg.put("role", "user");
             userMsg.put("content", userContent.openAiContent());

@@ -13,6 +13,7 @@ import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.util.CollectionUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 
 /**
@@ -51,6 +52,24 @@ public class VectorMemoryStore implements MemoryStore {
      * 文档切块并发入库的并行度，来自 {@code app.rag.ingest-parallelism}。
      */
     private final int ingestParallelism;
+
+    /**
+     * 各 docId 已入库的切块数（进程内计数，用于 deleteByDocId 时回减）。
+     */
+    private final Map<String, Integer> docChunkCounts = new ConcurrentHashMap<>();
+
+    /**
+     * 文档切块总数。0 表示确定为空；-1 表示"无法精确计数但已知非空"哨兵
+     * （进程重启后外部向量库仍有数据时使用，避免误判为空而隐藏 search_document）。
+     */
+    private volatile long documentCount = 0;
+
+    /**
+     * 是否已对底层向量库做过一次存在性探测（只探测一次，避免每次请求多一次 embedding）。
+     */
+    private volatile boolean documentStoreChecked = false;
+
+    private static final long DOCUMENT_COUNT_UNKNOWN = -1;
 
     public VectorMemoryStore(VectorStore vectorStore, double similarityThreshold,
                              AsyncTaskExecutor ingestExecutor, int ingestParallelism) {
@@ -255,6 +274,13 @@ public class VectorMemoryStore implements MemoryStore {
             } else {
                 parallelAdd(chunks);
             }
+            for (Document chunk : chunks) {
+                Object docId = chunk.getMetadata().get(Constant.MD_DOC_ID);
+                if (docId != null) {
+                    docChunkCounts.merge(String.valueOf(docId), 1, Integer::sum);
+                }
+            }
+            documentCount += chunks.size();
             log.info("文档切块已入库 count={}", chunks.size());
         } catch (Exception e) {
             log.warn("文档切块入库失败 原因: {}", e.getMessage());
@@ -315,11 +341,64 @@ public class VectorMemoryStore implements MemoryStore {
     public void deleteByDocId(String docId) {
         try {
             vectorStore.delete("docId == '" + docId + "'");
+            Integer removed = docChunkCounts.remove(docId);
+            if (removed != null && documentCount > 0) {
+                documentCount = Math.max(0, documentCount - removed);
+            }
             log.info("文档切块已删除 docId={}", docId);
         } catch (Exception e) {
             log.warn("按文档 ID 删除切块失败 docId={} 原因: {}", docId, e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * 判断文档知识库是否已有内容（是否应该暴露 search_document 工具）。
+     *
+     * <p>进程内计数优先；计数为 0 时会对底层向量库做一次存在性探测
+     * （query 空串 + topK 1 + 阈值 0 + category==document 过滤），
+     * 以覆盖"进程重启后外部向量库（Milvus）仍有历史数据"的场景。
+     * 探测只执行一次并缓存结果，不随每次请求触发。
+     *
+     * @return true 表示知识库非空（应暴露 search_document）
+     */
+    public boolean hasDocuments() {
+        if (documentCount > 0) {
+            return true;
+        }
+        if (!documentStoreChecked) {
+            documentStoreChecked = true;
+            boolean found = !probeEmptyStore();
+            if (found) {
+                documentCount = DOCUMENT_COUNT_UNKNOWN;
+            }
+            return found;
+        }
+        return documentCount != 0;
+    }
+
+    /**
+     * 探测文档知识库是否非空：返回是否存在至少 1 条 category==document 记录。
+     * 空串查询被 embedding 服务拒绝时退回非空占位查询（topK+阈值 0 保证只要库非空必然命中）。
+     */
+    private boolean probeEmptyStore() {
+        for (String query : new String[]{"", "查询"}) {
+            try {
+                List<Document> docs = vectorStore.similaritySearch(
+                        SearchRequest.builder()
+                                .query(query)
+                                .topK(1)
+                                .filterExpression("category == '" + Constant.CATEGORY_DOCUMENT + "'")
+                                .similarityThreshold(0.0)
+                                .build()
+                );
+                return CollectionUtils.isEmpty(docs);
+            } catch (Exception e) {
+                log.warn("文档库存在性探测失败（query='{}'），尝试下一占位查询 原因: {}", query, e.getMessage());
+            }
+        }
+        // 全部探测失败时假定非空，避免误隐藏工具
+        return false;
     }
 
     /**
