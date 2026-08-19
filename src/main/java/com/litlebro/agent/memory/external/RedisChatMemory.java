@@ -9,10 +9,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 基于 Redis 的短期聊天记忆实现，实现 Spring AI 的 {@link ChatMemory} 接口。
@@ -38,6 +38,42 @@ public class RedisChatMemory implements ChatMemory {
     /** 短期记忆过期时间：30 分钟，超时自动删除 */
     private static final long TTL_MINUTES = 30;
 
+    /**
+     * 原子追加脚本：读旧值 → 合并两个 JSON 数组 → 写回 → 刷 TTL。
+     * 原实现"先读后写"存在并发读-改-写竞态，流式+阻塞双请求并发时可能互相覆盖丢消息。
+     */
+    private static final DefaultRedisScript<String> APPEND_SCRIPT = createAppendScript();
+
+    private static DefaultRedisScript<String> createAppendScript() {
+        DefaultRedisScript<String> script = new DefaultRedisScript<>();
+        script.setScriptText("""
+                local key = KEYS[1]
+                local newJson = ARGV[1]
+                local ttlSeconds = tonumber(ARGV[2])
+                local old = redis.call('GET', key)
+                local merged
+                if old then
+                    local oldInner = string.sub(old, 2, string.len(old) - 1)
+                    local newInner = string.sub(newJson, 2, string.len(newJson) - 1)
+                    if oldInner == '' then
+                        merged = newJson
+                    elseif newInner == '' then
+                        merged = old
+                    else
+                        merged = '[' .. oldInner .. ',' .. newInner .. ']'
+                    end
+                    redis.call('SET', key, merged)
+                else
+                    merged = newJson
+                    redis.call('SET', key, newJson)
+                end
+                redis.call('EXPIRE', key, ttlSeconds)
+                return merged
+                """);
+        script.setResultType(String.class);
+        return script;
+    }
+
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
     private final MessageCodec messageCodec;
@@ -51,7 +87,7 @@ public class RedisChatMemory implements ChatMemory {
 
     /**
      * 向指定会话追加一批消息。
-     * 先取出已有消息，追加新消息后再整体写回，并刷新 TTL。
+     * 通过 Lua 脚本原子完成"读旧值-合并-写回-刷 TTL"，避免并发追加互相覆盖。
      *
      * @param conversationId 会话 ID
      * @param messages       待追加的消息列表
@@ -62,10 +98,9 @@ public class RedisChatMemory implements ChatMemory {
             return;
         }
         String key = KEY_PREFIX + conversationId;
-        List<AgentMessage> existing = getAgentMessages(conversationId);
-        existing.addAll(messageCodec.toAgentMessages(messages, conversationId));
         try {
-            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(existing), TTL_MINUTES, TimeUnit.MINUTES);
+            String newJson = objectMapper.writeValueAsString(messageCodec.toAgentMessages(messages, conversationId));
+            redisTemplate.execute(APPEND_SCRIPT, List.of(key), newJson, String.valueOf(TTL_MINUTES * 60));
         } catch (Exception e) {
             log.warn("短期记忆写入失败 conversationId={} 原因: {}", conversationId, e.getMessage());
         }

@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 技能存储 Redis 实现：技能定义 JSON 存 Hash；会话技能记录存 Hash（无 TTL，重启不丢）。
@@ -88,7 +89,19 @@ public class RedisSkillStore implements SkillStore {
 
     @Override
     public void delete(String skillId) {
-        redisTemplate.opsForHash().delete(SKILLS_KEY, skillId);
+        try {
+            redisTemplate.opsForHash().delete(SKILLS_KEY, skillId);
+            // 同步清理各会话已记录名单，与 Local 实现一致，避免同名重注册后旧会话自动获得新技能
+            Set<String> recordedKeys = redisTemplate.keys(RECORDED_PREFIX + "*");
+            if (recordedKeys == null) {
+                return;
+            }
+            for (String key : recordedKeys) {
+                redisTemplate.opsForHash().delete(key, skillId);
+            }
+        } catch (Exception e) {
+            log.warn("技能删除 Redis 失败 skillId={} 原因: {}", skillId, e.getMessage());
+        }
     }
 
     @Override

@@ -30,4 +30,3 @@ AGENTS.md
 
 # Local skills tooling (installed by npx skills)
 .agents/
-skills-lock.json

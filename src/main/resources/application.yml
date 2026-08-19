@@ -2,6 +2,10 @@ spring:
   application:
     name: litlebro
 
+  # 启动 banner：以 UTF-8 读取 banner.txt（ASCII 图形含 Unicode 块字符）
+  banner:
+    charset: UTF-8
+
   servlet:
     multipart:
       # 单文件大小上限（RAG 文档上传）
@@ -136,16 +140,22 @@ app:
       type: ${APP_RAG_CACHE_TYPE:local}
       # 缓存 TTL（小时），过期后重新解析
       parse-ttl-hours: ${APP_RAG_CACHE_PARSE_TTL_HOURS:24}
+      # 本地缓存容量上限（条数）：单条可达 max-text-length，无上限会被持续上传的新文件耗尽内存
+      max-entries: ${APP_RAG_CACHE_MAX_ENTRIES:100}
     # 图片内容视觉描述配置（图片型 PDF 页面、直接上传的图片文件）
     vision:
-      # 是否启用视觉描述：启用后图片内容用 dashscope 多模态模型描述为文字后入库
+      # 是否启用视觉描述：启用后图片内容用多模态模型描述为文字后入库
       enabled: ${APP_RAG_VISION_ENABLED:true}
-      # 视觉描述模型（DashScope qwen-vl 系列）
-      model: ${APP_RAG_VISION_MODEL:qwen3.7-flash-2026-07-15}
-      # DashScope API Key
+      # 视觉描述模型（OpenAI 兼容端点，可指向任意兼容视觉模型；空值复用主模型 spring.ai.openai.chat.options.model）
+      model: ${APP_RAG_VISION_MODEL:}
+      # 独立 API Key（可选），空值复用主对话 Key（spring.ai.openai.api-key）
       api-key: ${APP_RAG_VISION_API_KEY:}
-      # DashScope 服务地址（默认 https://dashscope.aliyuncs.com/api/v1）
+      # 独立服务地址（可选），空值复用主对话端点（spring.ai.openai.base-url，兼容模式）
       base-url: ${APP_RAG_VISION_BASE_URL:}
+      # 压缩后图片字节上限，超限跳过识别并降级（防超大 payload 撑爆内存/超接口上限）
+      max-image-bytes: ${APP_RAG_VISION_MAX_IMAGE_BYTES:10485760}
+      # 并发视觉请求上限，封顶瞬时内存峰值
+      max-concurrency: ${APP_RAG_VISION_MAX_CONCURRENCY:2}
       # 渲染 PDF 页面的 DPI，越高描述越准但耗时越长
       pdf-dpi: ${APP_RAG_VISION_PDF_DPI:150}
     # 文档切块策略: semantic(默认) | fixed
@@ -184,6 +194,11 @@ app:
       model: ${APP_ROUTER_LLM_MODEL:}
       temperature: ${APP_ROUTER_LLM_TEMPERATURE:0.0}
       max-tokens: ${APP_ROUTER_LLM_MAX_TOKENS:256}
+      # 结构化输出模式: none(纯提示词,保留 max-tokens) | json_object(默认,服务端保证合法 JSON) | json_schema(严格 schema,部分模型支持)
+      # 非 none 时 max-tokens 不生效（结构化输出下设置会因截断产生非法 JSON）
+      response-format: ${APP_ROUTER_LLM_RESPONSE_FORMAT:json_object}
+      # 路由 LLM 输出不合规(解析失败/target 非法)时的重试次数，每次把错误反馈给模型重出
+      max-retries: ${APP_ROUTER_LLM_MAX_RETRIES:1}
     # 强文档知识库指示词：命中即硬路由 document
     strong-document-keywords: ["知识库", "文档库", "之前上传的文档", "上传到知识库", "全局文档", "库里有没有", "知识库里有"]
     # 强会话记忆指示词：命中即硬路由 memory

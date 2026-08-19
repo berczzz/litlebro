@@ -108,7 +108,10 @@ public class RetrievalRouter {
 
     /**
      * 轻量 LLM 兜底分类：结合问题、最近对话与附件 fileId 清单判断目标。
-     * 调用失败或解析失败统一返回 BOTH（保召回，不引入新误判）。
+     *
+     * <p>结构化输出（response-format=json_object/json_schema）下服务端保证返回合法 JSON，
+     * 此处仍校验 target 语义值；解析失败或 target 非法时按 max-retries 有界重试
+     * （把错误反馈给模型重出），重试耗尽统一返回 BOTH（保召回，不引入新误判）。
      */
     private RetrievalTarget llmRoute(String question, List<Message> recentHistory, List<AttachmentEntry> attachments) {
         ChatClient chatClient = routerChatClientProvider.getIfAvailable();
@@ -116,47 +119,68 @@ public class RetrievalRouter {
             log.warn("路由 LLM 不可用（routerChatClient 未装配），降级为 both 保召回");
             return RetrievalTarget.BOTH;
         }
-        try {
-            StringBuilder user = new StringBuilder("当前问题：").append(question).append("\n\n");
-            if (recentHistory != null && !recentHistory.isEmpty()) {
-                user.append("最近对话（供消解指代）：\n");
-                for (Message m : recentHistory) {
-                    String role = switch (m.getMessageType()) {
-                        case USER -> "用户";
-                        case ASSISTANT -> "助手";
-                        default -> String.valueOf(m.getMessageType());
-                    };
-                    user.append("- ").append(role).append(": ").append(truncate(m.getText(), 300)).append("\n");
-                }
-            }
-            if (attachments != null && !attachments.isEmpty()) {
-                user.append("\n会话名下已登记的附件（fileId 为唯一标识，文件名仅供识别）：\n");
-                for (AttachmentEntry e : attachments) {
-                    user.append("- ").append(e.fileId())
-                            .append(" : ").append(e.name() == null ? "(无文件名)" : e.name()).append("\n");
-                }
-                user.append("注意：附件内容只能通过 read_file / grep_file（按 fileId）读取；你只需判断问题是否引用附件，不要尝试按文件名访问附件。\n");
-            }
 
-            RouterDecision decision = chatClient.prompt()
-                    .system(SystemPrompt.ROUTER_CLASSIFY)
-                    .user(user.toString())
-                    .call()
-                    .entity(RouterDecision.class);
-            if (decision == null || decision.target() == null || decision.target().isBlank()) {
-                return RetrievalTarget.BOTH;
+        String lastError = null;
+        int maxRetries = props.getLlm().getMaxRetries();
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                String userText = buildUserPrompt(question, recentHistory, attachments);
+                if (lastError != null) {
+                    userText = userText + "\n\n【上一次输出不合规】" + lastError
+                            + "\n请重新判定，严格只输出一个 JSON 对象：{\"target\": \"none|memory|document|both\", \"reason\": \"简短原因\"}";
+                }
+                RouterDecision decision = chatClient.prompt()
+                        .system(SystemPrompt.ROUTER_CLASSIFY)
+                        .user(userText)
+                        .call()
+                        .entity(RouterDecision.class);
+                if (decision != null && decision.target() != null) {
+                    RetrievalTarget mapped = switch (decision.target().trim().toLowerCase()) {
+                        case "none" -> RetrievalTarget.NONE;
+                        case "memory" -> RetrievalTarget.MEMORY;
+                        case "document" -> RetrievalTarget.DOCUMENT;
+                        case "both" -> RetrievalTarget.BOTH;
+                        default -> null;
+                    };
+                    if (mapped != null) {
+                        return mapped;
+                    }
+                    lastError = "target 值非法: " + decision.target() + "（只允许 none/memory/document/both）";
+                } else {
+                    lastError = "模型未返回可解析的结构化结果";
+                }
+            } catch (Exception e) {
+                lastError = "解析失败: " + e.getMessage();
             }
-            return switch (decision.target().trim().toLowerCase()) {
-                case "none" -> RetrievalTarget.NONE;
-                case "memory" -> RetrievalTarget.MEMORY;
-                case "document" -> RetrievalTarget.DOCUMENT;
-                case "both" -> RetrievalTarget.BOTH;
-                default -> RetrievalTarget.BOTH;
-            };
-        } catch (Exception e) {
-            log.warn("LLM 路由兜底失败，降级为 both 保召回 原因: {}", e.getMessage());
-            return RetrievalTarget.BOTH;
+            log.warn("路由 LLM 第 {} 次输出不合规，重试。原因: {}", attempt + 1, lastError);
         }
+        log.warn("路由 LLM 重试 {} 次后仍失败，降级为 both 保召回", maxRetries);
+        return RetrievalTarget.BOTH;
+    }
+
+    /** 组装路由 LLM 的用户提示：当前问题 + 最近对话（消解指代）+ 附件 fileId 清单 */
+    private String buildUserPrompt(String question, List<Message> recentHistory, List<AttachmentEntry> attachments) {
+        StringBuilder user = new StringBuilder("当前问题：").append(question).append("\n\n");
+        if (recentHistory != null && !recentHistory.isEmpty()) {
+            user.append("最近对话（供消解指代）：\n");
+            for (Message m : recentHistory) {
+                String role = switch (m.getMessageType()) {
+                    case USER -> "用户";
+                    case ASSISTANT -> "助手";
+                    default -> String.valueOf(m.getMessageType());
+                };
+                user.append("- ").append(role).append(": ").append(truncate(m.getText(), 300)).append("\n");
+            }
+        }
+        if (attachments != null && !attachments.isEmpty()) {
+            user.append("\n会话名下已登记的附件（fileId 为唯一标识，文件名仅供识别）：\n");
+            for (AttachmentEntry e : attachments) {
+                user.append("- ").append(e.fileId())
+                        .append(" : ").append(e.name() == null ? "(无文件名)" : e.name()).append("\n");
+            }
+            user.append("注意：附件内容只能通过 read_file / grep_file（按 fileId）读取；你只需判断问题是否引用附件，不要尝试按文件名访问附件。\n");
+        }
+        return user.toString();
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -173,10 +197,6 @@ public class RetrievalRouter {
             return "";
         }
         return text.length() <= maxLen ? text : text.substring(0, maxLen) + "...";
-    }
-
-    /** 路由 LLM 的结构化输出模型 */
-    public record RouterDecision(String target, String reason) {
     }
 
     /**

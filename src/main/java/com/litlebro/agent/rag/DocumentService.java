@@ -101,16 +101,18 @@ public class DocumentService {
             if (text == null || text.isBlank()) {
                 throw new IllegalArgumentException("文件内容为空或无法解析文本: " + filename);
             }
+            // 缓存原文（截断前的完整解析结果），避免 maxTextLength 调大后同哈希命中截断文本
+            parseCache.put(fileHash, text);
             // 大文件防护：解析文本超长时截断，避免超长文本耗尽内存
             if (text.length() > maxTextLength) {
                 log.warn("解析文本超过上限（{}），已截断 filename={}", maxTextLength, filename);
                 text = text.substring(0, maxTextLength);
             }
-            parseCache.put(fileHash, text);
         } else {
             log.info("文档解析命中缓存，跳过解析 filename={} hash={}", filename, fileHash);
         }
-        log.info("上传文件的知识库文件内容如下：{}", text);
+        // 只打印长度，避免整份解析文本（上限 3MB）刷爆日志与泄露文件内容
+        log.info("上传文件的知识库文件内容如下（长度={}）", text.length());
         String docId = UUID.randomUUID().toString().replace("-", "");
         long now = System.currentTimeMillis();
 

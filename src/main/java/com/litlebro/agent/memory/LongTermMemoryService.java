@@ -33,6 +33,9 @@ public class LongTermMemoryService {
 
     private static final Logger log = LoggerFactory.getLogger(LongTermMemoryService.class);
 
+    /** 定位"最近一次"摘要的候选条数：向量检索按相似度排序，需取一批后按 createdAt 选最新 */
+    private static final int MAX_SUMMARY_CANDIDATES = 20;
+
     private final VectorMemoryStore vectorMemoryStore;
     private final MessageCodec messageCodec;
 
@@ -117,10 +120,21 @@ public class LongTermMemoryService {
 
     /**
      * 获取该会话最近一次压缩摘要的 Document（含 createdAt 元数据，可定位压缩点）。
+     *
+     * <p>向量检索按相似度排序返回（空 query 下最相似未必是时间最新），
+     * 故取一批候选后按 createdAt 取最大，确保拿到的是"最近一次"摘要。
      */
     public Document getLatestSummaryDoc(String sessionId) {
-        List<Document> docs = vectorMemoryStore.searchByCategoryNoThreshold(sessionId, Constant.CATEGORY_SUMMARY, 1);
-        return docs.isEmpty() ? null : docs.get(0);
+        List<Document> docs = vectorMemoryStore.searchByCategoryNoThreshold(
+                sessionId, Constant.CATEGORY_SUMMARY, MAX_SUMMARY_CANDIDATES);
+        return docs.stream()
+                .filter(d -> d.getMetadata() != null)
+                .max(Comparator.comparingLong(d -> toLong(d.getMetadata().get(Constant.MD_CREATED_AT))))
+                .orElse(null);
+    }
+
+    private long toLong(Object value) {
+        return value instanceof Number n ? n.longValue() : 0L;
     }
 
     /**

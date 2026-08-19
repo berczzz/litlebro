@@ -120,8 +120,14 @@ public class RouterProperties {
         private String model = "";
         /** 路由调用温度：分类任务固定低温，默认 0 */
         private double temperature = 0.0;
-        /** 路由调用输出 token 上限：只需输出一个短 JSON */
+        /** 路由调用输出 token 上限：只需输出一个短 JSON（仅 response-format=none 时生效） */
         private int maxTokens = 256;
+
+        /** 结构化输出模式：none(纯提示词) | json_object(默认，服务端保证合法 JSON) | json_schema(严格 schema，部分模型支持) */
+        private String responseFormat = "json_object";
+
+        /** 路由 LLM 输出不合规（解析失败/target 非法）时的重试次数 */
+        private int maxRetries = 1;
 
         public String getBaseUrl() {
             return baseUrl;
@@ -161,6 +167,22 @@ public class RouterProperties {
 
         public void setMaxTokens(int maxTokens) {
             this.maxTokens = maxTokens;
+        }
+
+        public String getResponseFormat() {
+            return responseFormat;
+        }
+
+        public void setResponseFormat(String responseFormat) {
+            this.responseFormat = responseFormat;
+        }
+
+        public int getMaxRetries() {
+            return maxRetries;
+        }
+
+        public void setMaxRetries(int maxRetries) {
+            this.maxRetries = maxRetries;
         }
     }
 }

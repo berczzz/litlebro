@@ -3,10 +3,10 @@ package com.litlebro.agent.service.stream;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.litlebro.agent.config.LlmSettings;
 import com.litlebro.agent.dto.StreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -40,25 +40,18 @@ public class OpenAiSseClient {
     private final boolean enableThinking;
     private final String completionsPath;
 
-    public OpenAiSseClient(ObjectMapper objectMapper,
-                           @Value("${spring.ai.openai.base-url:https://dashscope.aliyuncs.com/compatible-mode}") String baseUrl,
-                           @Value("${spring.ai.openai.api-key:}") String apiKey,
-                           @Value("${spring.ai.openai.chat.options.model:qwen3.8-max}") String model,
-                           @Value("${spring.ai.openai.chat.options.temperature:0.7}") double temperature,
-                           @Value("${spring.ai.openai.chat.options.max-tokens:131072}") int maxTokens,
-                           @Value("${app.stream.enable-thinking:false}") boolean enableThinking,
-                           @Value("${app.stream.completions-path:/v1/chat/completions}") String completionsPath) {
+    public OpenAiSseClient(ObjectMapper objectMapper, LlmSettings llm) {
         this.objectMapper = objectMapper;
-        this.model = model;
-        this.temperature = temperature;
-        this.maxTokens = maxTokens;
-        this.enableThinking = enableThinking;
-        this.completionsPath = completionsPath;
+        this.model = llm.getChatModel();
+        this.temperature = llm.getChatTemperature();
+        this.maxTokens = llm.getChatMaxTokens();
+        this.enableThinking = llm.isStreamEnableThinking();
+        this.completionsPath = llm.getStreamCompletionsPath();
         WebClient.Builder clientBuilder = WebClient.builder()
-                .baseUrl(baseUrl)
+                .baseUrl(llm.getChatBaseUrl())
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
-        if (apiKey != null && !apiKey.isBlank()) {
-            clientBuilder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        if (llm.getChatApiKey() != null && !llm.getChatApiKey().isBlank()) {
+            clientBuilder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + llm.getChatApiKey());
         }
         this.webClient = clientBuilder.build();
     }

@@ -41,6 +41,12 @@ public class LocalSkillExecutor implements SkillExecutor {
         if (request.args() != null) {
             command.addAll(request.args());
         }
+        // .jar 不能直接执行，需经 java -jar 启动；此处只处理"无解释器直跑 jar"的场景
+        if (request.interpreter() == null && command.size() > 0
+                && command.get(0).toLowerCase(Locale.ROOT).endsWith(".jar")) {
+            command.add(0, "-jar");
+            command.add(0, "java");
+        }
 
         Process process = null;
         try {

@@ -19,6 +19,7 @@ import com.litlebro.agent.rag.DocumentSplitterFactory;
 import com.litlebro.agent.rag.SemanticTextSplitter;
 import com.litlebro.agent.rag.external.RedisDocumentParseCache;
 import com.litlebro.agent.rag.local.LocalDocumentParseCache;
+import com.litlebro.agent.router.RouterDecision;
 import com.litlebro.agent.router.RouterProperties;
 import com.litlebro.agent.session.SessionManager;
 import com.litlebro.agent.session.external.RedisSessionManager;
@@ -38,6 +39,7 @@ import io.milvus.param.IndexType;
 import io.milvus.param.MetricType;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemory;
@@ -45,11 +47,13 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.ai.openai.api.ResponseFormat;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.milvus.MilvusVectorStore;
 import com.litlebro.agent.vectorstore.BatchingSimpleVectorStore;
 import com.litlebro.agent.vectorstore.CountBatchingStrategy;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -65,6 +69,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClient;
 
 /**
  * 全局 Bean 装配中心。
@@ -183,8 +188,9 @@ public class AppConfig {
 
     @Bean
     @ConditionalOnProperty(name = "app.rag.cache.type", havingValue = "local", matchIfMissing = true)
-    public DocumentParseCache localDocumentParseCache() {
-        return new LocalDocumentParseCache();
+    public DocumentParseCache localDocumentParseCache(
+            @Value("${app.rag.cache.max-entries:100}") int maxEntries) {
+        return new LocalDocumentParseCache(maxEntries);
     }
 
     @Bean
@@ -313,31 +319,80 @@ public class AppConfig {
      * api-key→{@code spring.ai.openai.api-key}，model→{@code spring.ai.openai.chat.options.model}），
      * 便于只声明 base-url 而复用主 Key/模型。
      *
-     * <p>路由任务只需输出一个短 JSON，故固定低温、短 max-tokens，成本远低于主对话。
+     * <p>路由任务只需输出一个短 JSON，故固定低温。结构化输出（response-format）非 none 时
+     * 由服务端约束采样保证合法 JSON，此时不设 max-tokens（防止截断把 JSON 切半）。
      */
     @Bean("routerChatClient")
     @ConditionalOnExpression("${app.router.enabled:true} && ${app.router.llm-fallback:true}")
     public ChatClient routerChatClient(
-            RouterProperties props,
-            @Value("${spring.ai.openai.base-url:}") String mainBaseUrl,
-            @Value("${spring.ai.openai.api-key:}") String mainApiKey,
-            @Value("${spring.ai.openai.chat.options.model:}") String mainModel) {
-        RouterProperties.Llm llm = props.getLlm();
-        String baseUrl = StringUtils.hasText(llm.getBaseUrl()) ? llm.getBaseUrl() : mainBaseUrl;
-        String apiKey = StringUtils.hasText(llm.getApiKey()) ? llm.getApiKey() : mainApiKey;
-        String model = StringUtils.hasText(llm.getModel()) ? llm.getModel() : mainModel;
+            RouterProperties props, LlmSettings llm, RestClient.Builder restClientBuilder) {
+        RouterProperties.Llm routerLlm = props.getLlm();
+        String baseUrl = StringUtils.hasText(routerLlm.getBaseUrl()) ? routerLlm.getBaseUrl() : llm.getChatBaseUrl();
+        String apiKey = StringUtils.hasText(routerLlm.getApiKey()) ? routerLlm.getApiKey() : llm.getChatApiKey();
+        String model = StringUtils.hasText(routerLlm.getModel()) ? routerLlm.getModel() : llm.getChatModel();
 
-        OpenAiApi.Builder apiBuilder = OpenAiApi.builder().baseUrl(baseUrl);
+        // 复用宽松 RestClient.Builder（忽略未知字段 + HTTP 超时），
+        // 否则 OpenAiApi.builder() 默认裸 RestClient 为严格 Jackson 且无超时，
+        // 遇到 qwen 的 reasoning_content 等扩展字段会直接反序列化失败
+        OpenAiApi.Builder apiBuilder = OpenAiApi.builder().baseUrl(baseUrl).restClientBuilder(restClientBuilder);
         // 空 apiKey 不设置，避免 Builder 校验抛异常（如仅配 base-url 复用主 Key 场景）
         if (StringUtils.hasText(apiKey)) {
             apiBuilder.apiKey(apiKey);
         }
-        OpenAiChatOptions options = OpenAiChatOptions.builder()
+
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                 .model(model)
-                .temperature(llm.getTemperature())
-                .maxTokens(llm.getMaxTokens())
+                .temperature(routerLlm.getTemperature());
+        String responseFormat = routerLlm.getResponseFormat();
+        if ("none".equalsIgnoreCase(responseFormat)) {
+            // 纯提示词模式：保留 max-tokens 控制输出成本
+            optionsBuilder.maxTokens(routerLlm.getMaxTokens());
+        } else {
+            // 结构化输出：服务端约束采样保证 JSON 合法/符合 schema，不设 max-tokens 防截断
+            ResponseFormat rf = "json_schema".equalsIgnoreCase(responseFormat)
+                    ? ResponseFormat.builder().type(ResponseFormat.Type.JSON_SCHEMA)
+                            .jsonSchema(ResponseFormat.JsonSchema.builder().name("router_decision")
+                                    .schema(new BeanOutputConverter<>(RouterDecision.class).getJsonSchemaMap())
+                                    .strict(true).build())
+                            .build()
+                    : ResponseFormat.builder().type(ResponseFormat.Type.JSON_OBJECT).build();
+            optionsBuilder.responseFormat(rf);
+        }
+        OpenAiChatOptions options = optionsBuilder.build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .openAiApi(apiBuilder.build())
+                .defaultOptions(options)
                 .build();
-        OpenAiChatModel chatModel = new OpenAiChatModel(apiBuilder.build(), options);
+        return ChatClient.builder(chatModel).build();
+    }
+
+    /**
+     * 视觉识别专用 ChatClient：独立构建 OpenAI 兼容端点。
+     *
+     * <p>可指向任意支持图片输入的 OpenAI 兼容多模态模型（dashscope qwen-vl /
+     * OpenAI / 本地 vLLM / Ollama 等），默认回落主对话端点与 Key（{@code spring.ai.openai.*}）。
+     *
+     * <p>无 advisor/defaultSystem，与主对话 {@code chatClient} 隔离，避免视觉描述调用污染会话记忆。
+     * 由 {@code app.rag.vision.enabled=true} 时装配，未启用时 {@link ObjectProvider#getIfAvailable()} 返回空。
+     */
+    @Bean("visionChatClient")
+    @ConditionalOnProperty(name = "app.rag.vision.enabled", havingValue = "true")
+    public ChatClient visionChatClient(LlmSettings llm, RestClient.Builder restClientBuilder) {
+        OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
+                .baseUrl(llm.resolveVisionBaseUrl())
+                // 复用宽松 RestClient.Builder，保证未知字段容忍与 HTTP 超时（见 routerChatClient 注释）
+                .restClientBuilder(restClientBuilder);
+        // 空 apiKey 不设置，避免 Builder 校验抛异常
+        if (StringUtils.hasText(llm.resolveVisionApiKey())) {
+            apiBuilder.apiKey(llm.resolveVisionApiKey());
+        }
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .model(llm.resolveVisionModel())
+                .build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .openAiApi(apiBuilder.build())
+                .defaultOptions(options)
+                .build();
         return ChatClient.builder(chatModel).build();
     }
 

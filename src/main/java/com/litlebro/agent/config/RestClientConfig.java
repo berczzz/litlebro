@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -25,12 +28,15 @@ import java.util.List;
  * 显式注入"忽略未知字段"的 Jackson MessageConverter。由于它是容器中唯一的
  * RestClient.Builder，OpenAiApi 自动装配时必定拿到本 Bean，从而获得
  * 前向兼容能力（对上游模型新增字段安全忽略）。
+ *
+ * <p>同时配置 HTTP 连接/读超时：JDK HttpClient 默认无请求超时，
+ * 上游 LLM 端点挂起会让阻塞链路（对话/路由/视觉/压缩/embedding）的请求线程无限阻塞。
  */
 @Configuration
 public class RestClientConfig {
 
     /**
-     * 提供宽松 JSON 反序列化的 RestClient.Builder。
+     * 提供宽松 JSON 反序列化 + HTTP 超时的 RestClient.Builder。
      *
      * <p>仅注册 String 与 Jackson 两种 MessageConverter：
      * <ul>
@@ -43,9 +49,17 @@ public class RestClientConfig {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         MappingJackson2HttpMessageConverter jackson = new MappingJackson2HttpMessageConverter(mapper);
-        return RestClient.builder().messageConverters(List.of(
-                new StringHttpMessageConverter(),
-                jackson
-        ));
+        // 连接超时 10 秒 + 读超时 60 秒，防止上游挂起拖死请求线程
+        HttpClient httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(Duration.ofSeconds(60));
+        return RestClient.builder()
+                .requestFactory(requestFactory)
+                .messageConverters(List.of(
+                        new StringHttpMessageConverter(),
+                        jackson
+                ));
     }
 }

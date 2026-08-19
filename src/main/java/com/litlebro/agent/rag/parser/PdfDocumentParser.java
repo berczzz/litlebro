@@ -14,10 +14,8 @@ import org.springframework.stereotype.Component;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.File;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.util.UUID;
 
 /**
  * PDF 文档解析策略：优先提取 PDF 内嵌文本层，图片型（扫描件）走视觉模型描述内容。
@@ -88,7 +86,7 @@ public class PdfDocumentParser implements DocumentParser {
 
     /**
      * 逐页渲染为图片并调用视觉模型描述，返回拼接文本。
-     * 渲染出的临时图片保存在系统临时目录，使用后删除。
+     * 渲染结果直接编码为 PNG 字节交给视觉服务，不写临时文件。
      */
     private String describeViaRendering(PDDocument pdf) throws IOException {
         if (!visionService.isAvailable()) {
@@ -96,35 +94,16 @@ public class PdfDocumentParser implements DocumentParser {
         }
         PDFRenderer renderer = new PDFRenderer(pdf);
         StringBuilder sb = new StringBuilder();
-        File tempDir = Files.createTempDirectory("litlebro-vision-").toFile();
-        try {
-            int pageCount = pdf.getNumberOfPages();
-            for (int i = 0; i < pageCount; i++) {
-                BufferedImage image = renderer.renderImageWithDPI(i, dpi);
-                File imageFile = new File(tempDir, "page-" + i + "-" + UUID.randomUUID() + ".png");
-                ImageIO.write(image, "png", imageFile);
+        int pageCount = pdf.getNumberOfPages();
+        for (int i = 0; i < pageCount; i++) {
+            BufferedImage image = renderer.renderImageWithDPI(i, dpi);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", baos);
 
-                String pageText = visionService.describeImage(imageFile.getAbsolutePath());
-                log.info("PDF 视觉描述页面 {} 完成，长度={}", i, pageText == null ? 0 : pageText.length());
-                if (pageText != null && !pageText.isBlank()) {
-                    sb.append("【第").append(i + 1).append("页】\n").append(pageText).append("\n");
-                }
-                if (!imageFile.delete()) {
-                    imageFile.deleteOnExit();
-                }
-            }
-        } finally {
-            // 清理临时目录
-            File[] files = tempDir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    if (!f.delete()) {
-                        f.deleteOnExit();
-                    }
-                }
-            }
-            if (!tempDir.delete()) {
-                tempDir.deleteOnExit();
+            String pageText = visionService.describeImage(baos.toByteArray(), "image/png");
+            log.info("PDF 视觉描述页面 {} 完成，长度={}", i, pageText == null ? 0 : pageText.length());
+            if (pageText != null && !pageText.isBlank()) {
+                sb.append("【第").append(i + 1).append("页】\n").append(pageText).append("\n");
             }
         }
         return sb.toString();

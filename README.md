@@ -188,6 +188,7 @@ app:
 | 文档解析缓存类型 | `APP_RAG_CACHE_TYPE`（`app.rag.cache.type`） | `local`（`local`/`redis`） |
 | 流式思考开关 | `APP_STREAM_ENABLE_THINKING`（`app.stream.enable-thinking`） | `false` |
 | 文档解析缓存 TTL | `APP_RAG_CACHE_PARSE_TTL_HOURS`（`app.rag.cache.parse-ttl-hours`） | `24` |
+| 文档解析缓存容量上限 | `APP_RAG_CACHE_MAX_ENTRIES`（`app.rag.cache.max-entries`） | `100`（本地缓存条数上限，LRU 淘汰，防无界缓存耗尽内存） |
 | 附件注册表类型 | `APP_ATTACHMENT_REGISTRY_TYPE`（`app.attachment.registry.type`） | `local`（`local`/`redis`） |
 | 附件存活天数 | `APP_ATTACHMENT_TTL_DAYS`（`app.attachment.ttl-days`） | `7` |
 | 工具禁用状态存储类型 | `APP_TOOL_STORE_TYPE`（`app.tool.store.type`） | `local`（`local`/`redis`） |

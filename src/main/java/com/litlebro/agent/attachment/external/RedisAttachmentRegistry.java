@@ -14,15 +14,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
- * 附件注册表 Redis 实现：以 JSON 字符串存储附件条目（带 TTL），重启不丢。
+ * 附件注册表 Redis 实现：以 JSON 字符串存储附件条目，重启不丢。
  * 由配置 {@code app.attachment.registry.type=redis} 装配。
  *
  * <p>实现要点：
  * <ul>
- *   <li>单条条目以 {@code agent:attachment:<fileId>} 为 key 存储 JSON，TTL 与附件过期时间对齐</li>
+ *   <li>单条条目以 {@code agent:attachment:<fileId>} 为 key 存储 JSON（不设 TTL），
+ *       过期判定统一由 {@code AttachmentStore.cleanupExpired} 按 expiresAt 扫描删除，
+ *       与 Local 实现行为一致——若 key 带 TTL，到期后 {@link #all()} 将取不到条目，
+ *       清理任务永远无法删除对应的物理文件</li>
  *   <li>索引集合 {@code agent:attachment:index} 记录全部 fileId，供 {@link #all()} 枚举</li>
  *   <li>会话索引集合 {@code agent:attachment:session:<sessionId>} 记录该会话名下 fileId，
  *       供 {@link #bySession} 直接命中（register/remove 时同步维护，避免请求路径全库扫描）</li>
@@ -53,8 +55,9 @@ public class RedisAttachmentRegistry implements AttachmentRegistry {
         try {
             String key = KEY_PREFIX + entry.fileId();
             String json = objectMapper.writeValueAsString(toMap(entry));
-            long ttlMillis = Math.max(1, entry.expiresAt() - System.currentTimeMillis());
-            redisTemplate.opsForValue().set(key, json, ttlMillis, TimeUnit.MILLISECONDS);
+            // 不设 TTL：过期删除统一走 AttachmentStore.cleanupExpired（见类注释），
+            // 否则 key 到期消失后索引仍在，清理任务取不到条目导致物理文件永久残留
+            redisTemplate.opsForValue().set(key, json);
             redisTemplate.opsForSet().add(INDEX_KEY, entry.fileId());
             if (entry.sessionId() != null) {
                 redisTemplate.opsForSet().add(SESSION_INDEX_PREFIX + entry.sessionId(), entry.fileId());

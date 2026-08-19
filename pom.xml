@@ -15,7 +15,7 @@
     <artifactId>litlebro</artifactId>
     <version>1.0.0</version>
     <name>litlebro</name>
-    <description>Spring AI Agent Demo</description>
+    <description>Spring AI Agent</description>
 
     <properties>
         <java.version>17</java.version>
@@ -75,26 +75,6 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>5.2.5</version>
-        </dependency>
-
-        <!-- 图片内容识别（视觉描述入库），复用 dashscope 多模态模型（qwen-vl） -->
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>dashscope-sdk-java</artifactId>
-            <version>2.18.2</version>
-            <!-- dashscope 传递依赖旧版 jsonschema-generator(4.31.1)，与 Spring AI 的 4.37.0 冲突，
-                 排除后由 Spring AI 统一提供 4.37.0，避免 NoClassDefFoundError: AnnotationHelper -->
-            <!-- slf4j-simple 是独立的 SLF4J 绑定，与 Spring Boot 的 logback 抢绑定，排除 -->
-            <exclusions>
-                <exclusion>
-                    <groupId>com.github.victools</groupId>
-                    <artifactId>jsonschema-generator</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-simple</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>

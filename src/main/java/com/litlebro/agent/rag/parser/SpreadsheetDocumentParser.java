@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 
 import java.io.ByteArrayInputStream;
@@ -28,6 +29,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 
+import javax.xml.XMLConstants;
+import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParserFactory;
 
 /**
@@ -81,6 +84,13 @@ public class SpreadsheetDocumentParser implements DocumentParser {
 
             SheetCollector collector = new SheetCollector();
             SAXParserFactory factory = SAXParserFactory.newInstance();
+            // XXE 防护：sheet XML 来自用户上传的 xlsx，必须禁用 DTD 与外部实体，
+            // 否则恶意文件可借外部实体读取本地文件/发起内网请求
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            trySetFeature(factory, "http://apache.org/xml/features/disallow-doctype-decl", true);
+            trySetFeature(factory, "http://xml.org/sax/features/external-general-entities", false);
+            trySetFeature(factory, "http://xml.org/sax/features/external-parameter-entities", false);
+            trySetFeature(factory, "http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             XMLReader parser = factory.newSAXParser().getXMLReader();
             parser.setContentHandler(new XSSFSheetXMLHandler(styles, sst, collector, false));
 
@@ -100,6 +110,17 @@ public class SpreadsheetDocumentParser implements DocumentParser {
         } catch (Exception e) {
             log.warn("xlsx 解析失败 filename={} 原因: {}", filename, e.getMessage());
             throw new IOException("xlsx 解析失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 安全设置 SAX feature，解析器不支持该 feature 时仅告警不中断（兼容不同 JDK/实现）。
+     */
+    private static void trySetFeature(SAXParserFactory factory, String feature, boolean value) {
+        try {
+            factory.setFeature(feature, value);
+        } catch (ParserConfigurationException | SAXException e) {
+            log.warn("SAX feature 设置失败（忽略） feature={} 原因: {}", feature, e.getMessage());
         }
     }
 

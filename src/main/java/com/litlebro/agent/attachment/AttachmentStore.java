@@ -17,8 +17,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -54,6 +56,8 @@ public class AttachmentStore {
     private final AttachmentRegistry registry;
     private final AttachmentResolverFactory resolverFactory;
     private final DocumentParserFactory parserFactory;
+    /** 懒解析互斥锁（按 fileId），防止并发首读同一附件重复解析与写文件 */
+    private final Map<String, Object> parseLocks = new ConcurrentHashMap<>();
 
     public AttachmentStore(
             AttachmentRegistry registry,
@@ -321,23 +325,39 @@ public class AttachmentStore {
     /**
      * 懒解析二进制附件为纯文本并缓存 txtPath。
      *
+     * <p>按 fileId 加互斥锁：并发首读同一附件时只有一个线程执行解析，
+     * 其余线程在锁内重查注册表复用已生成的 txt 路径，避免重复解析与写文件竞态。
+     *
      * @return 懒解析生成的 txt 文件路径
      */
     private Path lazyParse(AttachmentEntry entry) throws IOException {
-        DocumentParser parser;
-        try {
-            parser = parserFactory.resolve(entry.name());
-        } catch (IllegalArgumentException e) {
-            log.warn("附件格式不支持懒解析 name={} fileId={}", entry.name(), entry.fileId());
-            throw new IOException("不支持的附件格式: " + entry.name(), e);
+        String fileId = entry.fileId();
+        Object lock = parseLocks.computeIfAbsent(fileId, k -> new Object());
+        synchronized (lock) {
+            try {
+                // 获得锁后重查：其他线程可能已完成解析并登记 txtPath
+                AttachmentEntry fresh = registry.get(fileId);
+                if (fresh != null && fresh.txtPath() != null && Files.exists(fresh.txtPath())) {
+                    return fresh.txtPath();
+                }
+                DocumentParser parser;
+                try {
+                    parser = parserFactory.resolve(entry.name());
+                } catch (IllegalArgumentException e) {
+                    log.warn("附件格式不支持懒解析 name={} fileId={}", entry.name(), fileId);
+                    throw new IOException("不支持的附件格式: " + entry.name(), e);
+                }
+                byte[] bytes = Files.readAllBytes(entry.rawPath());
+                String text = parser.parse(bytes, entry.name());
+                Path txtPath = baseDir.resolve(fileId + ".txt");
+                Files.writeString(txtPath, text);
+                registry.register(entry.withTxtPath(txtPath));
+                log.info("附件懒解析完成 fileId={} name={} 文本长度={}", fileId, entry.name(), text.length());
+                return txtPath;
+            } finally {
+                parseLocks.remove(fileId);
+            }
         }
-        byte[] bytes = Files.readAllBytes(entry.rawPath());
-        String text = parser.parse(bytes, entry.name());
-        Path txtPath = baseDir.resolve(entry.fileId() + ".txt");
-        Files.writeString(txtPath, text, StandardOpenOption.CREATE_NEW);
-        registry.register(entry.withTxtPath(txtPath));
-        log.info("附件懒解析完成 fileId={} name={} 文本长度={}", entry.fileId(), entry.name(), text.length());
-        return txtPath;
     }
 
     private String extensionOf(String name) {

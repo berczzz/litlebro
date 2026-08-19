@@ -8,8 +8,10 @@ import org.springframework.stereotype.Component;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageInputStream;
 import javax.imageio.stream.ImageOutputStream;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -38,6 +40,12 @@ public class ImageCompressor {
     /** JPEG 重编码质量（0~1），PNG 透图不适用 */
     private final float jpegQuality;
 
+    /**
+     * 单图最大像素数（宽×高）。尺寸先验超过该值时跳过解码直接透传，
+     * 防止解压炸弹（极小压缩包解码出巨幅位图）在 {@code ImageIO.read} 整图解码阶段耗尽内存。
+     */
+    private static final long MAX_DECODE_PIXELS = 40_000_000L;
+
     public ImageCompressor(
             @Value("${app.attachment.image.max-dimension:1024}") int maxDimension,
             @Value("${app.attachment.image.jpeg-quality:0.85}") float jpegQuality) {
@@ -64,49 +72,80 @@ public class ImageCompressor {
         if (mime == null || !mime.toLowerCase(Locale.ROOT).startsWith("image/")) {
             return attachment;
         }
-        try {
-            BufferedImage source = ImageIO.read(new ByteArrayInputStream(attachment.bytes()));
-            if (source == null) {
-                // 解码失败（如 webp 未注册 ImageIO 插件），原样透传
+        try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(attachment.bytes()))) {
+            if (iis == null) {
                 return attachment;
             }
-            int width = source.getWidth();
-            int height = source.getHeight();
-            if (Math.max(width, height) <= maxDimension) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
+            if (!readers.hasNext()) {
+                // 无可用解码器（如 webp 未注册 ImageIO 插件），原样透传
                 return attachment;
             }
-            double scale = (double) maxDimension / Math.max(width, height);
-            int newWidth = Math.max(1, (int) Math.round(width * scale));
-            int newHeight = Math.max(1, (int) Math.round(height * scale));
-
-            boolean hasAlpha = source.getColorModel().hasAlpha();
-            int type = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
-            BufferedImage resized = new BufferedImage(newWidth, newHeight, type);
-            Graphics2D g = resized.createGraphics();
+            ImageReader reader = readers.next();
             try {
-                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-                g.drawImage(source, 0, 0, newWidth, newHeight, null);
-            } finally {
-                g.dispose();
-            }
+                reader.setInput(iis, true, true);
+                // 先读宽高再决定是否解码：尺寸信息位于文件头，无需整图解码
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                if (width <= 0 || height <= 0) {
+                    return attachment;
+                }
+                // 解压炸弹防御：头信息即声明巨幅尺寸的，直接透传，避免整图解码耗尽内存
+                if ((long) width * height > MAX_DECODE_PIXELS) {
+                    log.warn("图片像素数过大，跳过压缩以免解码内存溢出 name={} {}x{}",
+                            attachment.name(), width, height);
+                    return attachment;
+                }
+                // maxDimension<=0 表示不压缩（对齐配置注释），原样透传
+                if (maxDimension <= 0 || Math.max(width, height) <= maxDimension) {
+                    return attachment;
+                }
+                double scale = (double) maxDimension / Math.max(width, height);
+                int newWidth = Math.max(1, (int) Math.round(width * scale));
+                int newHeight = Math.max(1, (int) Math.round(height * scale));
 
-            byte[] outBytes;
-            String outMime;
-            if (hasAlpha) {
-                outBytes = encode(resized, "png", null);
-                outMime = "image/png";
-            } else {
-                outBytes = encode(resized, "jpeg", jpegQuality);
-                outMime = "image/jpeg";
+                BufferedImage source;
+                try {
+                    source = reader.read(0);
+                } catch (Exception e) {
+                    log.warn("图片解码失败，原样透传 name={} 原因: {}", attachment.name(), e.getMessage());
+                    return attachment;
+                }
+                if (source == null) {
+                    return attachment;
+                }
+
+                boolean hasAlpha = source.getColorModel().hasAlpha();
+                int type = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+                BufferedImage resized = new BufferedImage(newWidth, newHeight, type);
+                Graphics2D g = resized.createGraphics();
+                try {
+                    g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                    g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+                    g.drawImage(source, 0, 0, newWidth, newHeight, null);
+                } finally {
+                    g.dispose();
+                }
+
+                byte[] outBytes;
+                String outMime;
+                if (hasAlpha) {
+                    outBytes = encode(resized, "png", null);
+                    outMime = "image/png";
+                } else {
+                    outBytes = encode(resized, "jpeg", jpegQuality);
+                    outMime = "image/jpeg";
+                }
+                if (outBytes == null || outBytes.length == 0) {
+                    return attachment;
+                }
+                log.info("图片压缩: name={} {}x{} -> {}x{} ({} -> {} bytes)",
+                        attachment.name(), width, height, newWidth, newHeight,
+                        attachment.bytes().length, outBytes.length);
+                return new ResolvedAttachment(attachment.name(), outMime, outBytes);
+            } finally {
+                reader.dispose();
             }
-            if (outBytes == null || outBytes.length == 0) {
-                return attachment;
-            }
-            log.info("图片压缩: name={} {}x{} -> {}x{} ({} -> {} bytes)",
-                    attachment.name(), width, height, newWidth, newHeight,
-                    attachment.bytes().length, outBytes.length);
-            return new ResolvedAttachment(attachment.name(), outMime, outBytes);
         } catch (IOException e) {
             log.warn("图片压缩失败 name={} 原因: {}", attachment.name(), e.getMessage());
             return attachment;
