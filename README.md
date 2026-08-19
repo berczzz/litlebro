@@ -1,12 +1,10 @@
-
-
 # litlebro — 小老弟
 
-一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 项目（开箱即用）。通过 ChatClient 调用 OpenAI 兼容的 LLM，实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**和**可插拔的工具调用机制**。
+一个基于 **Spring Boot 3.4 + Spring AI 1.0.0-M6** 的 AI Agent 项目（开箱即用）。通过 ChatClient 调用 OpenAI 兼容的 LLM，实现了一套**二层记忆架构**（短期/长期记忆）+ **compaction 压缩机制**、**检索前路由层**和**可插拔的工具调用机制**。
 
 ## 特性
 
-- **对话式 Agent**：REST API 调用，支持多会话隔离（sessionId）
+- **对话式 Agent**：REST API 调用，支持多会话隔离（sessionId），阻塞式 + 流式（SSE）双通道
 - **二层记忆架构**：
   - 短期记忆（ChatMemory）— 维护最近对话历史
   - 长期记忆（向量库）— 持久化消息与压缩摘要
@@ -14,14 +12,15 @@
   - LLM 调用后置检查 token 占用，超阈值（模型窗口 75%）自动触发增量压缩
   - 保留最近 6 条消息原文，更早的历史压缩为摘要存入长期记忆
   - 压缩时传入旧摘要做增量，不重复压缩同一段历史
+- **检索前路由层**：进入主 LLM 前判定问题指向（会话记忆 / 文档知识库 / 附件 / 都不查），强指示词硬路由、歧义词用轻量 LLM 兜底分类，空知识库/无附件自动剔除对应工具，减少无效检索
 - **可插拔工具**：日期时间、会话记忆检索、文档知识库检索、附件读取/检索，LLM 按需自动调用
-- **工具禁用管理**：每个工具启动时生成稳定 ID（类名，跨重启不变），可按 ID 禁用/启用，禁用后不再下发给大模型；禁用状态存储可切换内存 / Redis
+- **工具禁用管理**：每个工具启动时生成稳定 ID（类名首字母小写，跨重启不变），可按 ID 禁用/启用，禁用后不再下发给大模型；禁用状态存储可切换内存 / Redis
 - **技能（Skills）模块**：本地目录技能包，对话按请求 `skillIds` 启用并**自动累加记录**到会话（无过期），LLM 可渐进式加载说明、执行捆绑脚本、读取包内参考文件（默认关闭）
 - **MCP（Model Context Protocol）Client 模块**：注册 stdio / SSE 类型的 MCP 服务器，按请求 `mcpServerIds` 启用并**自动累加记录**到会话，工具经 `{serverId}_` 前缀化后并入统一工具池，LLM 可直接调用（默认关闭）
 - **RAG 文档知识库**：上传 txt/md/json/pdf/docx/xlsx/xls/csv/图片 → 语义/固定切块 → 向量化，LLM 按需检索
-- **附件直传**：对话时可直接携带文件（base64 / URL / multipart），文档类附件懒解析后由 LLM 用工具读取，到期自动清理
+- **附件直传**：对话时可直接携带文件（base64 / URL / multipart），图片直接多模态入对话、文档类附件懒解析后由 LLM 用工具读取，到期自动清理
 - **两级检索过滤**：向量库宽召回（低阈值）+ 工具层相似度二次过滤（去噪）
-- **存储模式可切换**：内存实现（默认，开箱即用）/ Redis + Milvus 外部实现
+- **存储模式可切换**：内存实现（默认，开箱即用）/ Redis + Milvus 外部实现，各存储互不耦合可自由组合
 - **Token 统计**：以模型返回的 usage 为准，按会话累积统计
 
 ## 技术栈
@@ -34,7 +33,7 @@
 | 构建工具 | Maven |
 | 向量库 | Milvus（可回退 SimpleVectorStore） |
 | 缓存/短期记忆 | Redis（可回退内存） |
-| 文档解析 | PDFBox（PDF）/ Apache POI（docx/xlsx/xls）/ 手写 CSV（csv）/ dashscope qwen-vl（图片视觉描述） |
+| 文档解析 | PDFBox（PDF）/ Apache POI（docx/xlsx/xls）/ 手写 CSV（csv）/ OpenAI 兼容多模态模型（图片视觉描述，默认 qwen-vl） |
 
 ## 快速开始
 
@@ -50,9 +49,10 @@
 
 | 配置 | 环境变量 | 默认值 |
 | --- | --- | --- |
-| API Key | `OPENAI_API_KEY` | 需自行填写 |
-| Base URL | `OPENAI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode` |
-| 模型 | — | `qwen3.8-max` |
+| API Key | `OPEN_AI_API_KEY` | 需自行填写 |
+| Base URL | `OPEN_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode` |
+| 对话模型 | `OPEN_AI_BASE_MODEL` | `qwen3.8-max` |
+| Embedding 模型 | `APP_EMBED_MODEL` | `text-embedding-v3` |
 
 > 本项目默认对接阿里云 DashScope 的 OpenAI 兼容模式，也可改为任意兼容网关。注意：Spring AI 会自动拼接 `/v1/{endpoint}`，base-url **不要带尾部 `/v1`**。
 
@@ -149,8 +149,8 @@ curl http://localhost:8080/api/agent/mcp/servers/echo/tools
 | 短期（ChatMemory） | `app.memory.stm.type` | `InMemoryChatMemory`（`local`） | `RedisChatMemory`（`redis`，30 分钟 TTL） |
 | 长期（VectorStore） | `app.memory.ltm.type` | `SimpleVectorStore`（`local`） | `MilvusVectorStore`（`milvus`） |
 | 会话状态（SessionManager） | `app.memory.stm.type` | `LocalSessionManager`（`local`） | `RedisSessionManager`（`redis`，30 分钟 TTL） |
-| 文档解析缓存 | `app.rag.cache.type` | `LocalDocumentParseCache`（`local`） | `RedisDocumentParseCache`（`redis`，24h TTL） |
-| 附件注册表 | `app.attachment.registry.type` | `LocalAttachmentRegistry`（`local`，重启丢失） | `RedisAttachmentRegistry`（`redis`，TTL 对齐附件过期） |
+| 文档解析缓存 | `app.rag.cache.type` | `LocalDocumentParseCache`（`local`，LRU 容量上限） | `RedisDocumentParseCache`（`redis`，24h TTL） |
+| 附件注册表 | `app.attachment.registry.type` | `LocalAttachmentRegistry`（`local`，重启丢失） | `RedisAttachmentRegistry`（`redis`，重启不丢，过期由定时清理任务扫描删除） |
 | 工具禁用状态 | `app.tool.store.type` | `LocalToolDisabledStore`（`local`，重启丢失） | `RedisToolDisabledStore`（`redis`，无 TTL） |
 | 技能存储 | `app.skill.store.type` | `LocalSkillStore`（`local`，重启丢失） | `RedisSkillStore`（`redis`，记录无 TTL） |
 | MCP 服务器存储 | `app.mcp.store.type` | `LocalMcpServerStore`（`local`，重启丢失） | `RedisMcpServerStore`（`redis`，记录无 TTL） |
@@ -167,44 +167,6 @@ app:
     ltm:
       type: local      # 长期记忆用进程内向量库
 ```
-
-### 配置说明
-
-| 配置 | 环境变量 | 默认值 |
-| --- | --- | --- |
-| 短期记忆类型 | `APP_MEMORY_STM_TYPE`（`app.memory.stm.type`） | `local` |
-| 长期记忆类型 | `APP_MEMORY_LTM_TYPE`（`app.memory.ltm.type`） | `local` |
-| 上下文窗口大小 | `APP_MEMORY_CONTEXT_MAX_TOKENS`（`app.memory.context.max-tokens`） | `128000` |
-| 向量检索相似度阈值 | `APP_MEMORY_VECTOR_SIMILARITY_THRESHOLD`（`app.memory.vector.similarity-threshold`） | `0.2` |
-| 记忆检索二次过滤阈值 | `APP_MEMORY_MIN_SCORE`（`app.memory.min-score`） | `0.35` |
-| 文档检索二次过滤阈值 | `APP_RAG_MIN_SCORE`（`app.rag.min-score`） | `0.35` |
-| 切块策略 | `APP_RAG_SPLITTER`（`app.rag.splitter.strategy`） | `semantic` |
-| 单文档解析文本长度上限 | `APP_RAG_MAX_TEXT_LENGTH`（`app.rag.max-text-length`） | `3000000` |
-| 图片视觉描述开关 | `APP_RAG_VISION_ENABLED`（`app.rag.vision.enabled`） | `false` |
-| 视觉描述模型 | `APP_RAG_VISION_MODEL`（`app.rag.vision.model`） | `qwen-vl-plus` |
-| 视觉描述 API Key | `APP_RAG_VISION_API_KEY`（`app.rag.vision.api-key`） | 复用对话 API Key |
-| 视觉描述服务地址 | `APP_RAG_VISION_BASE_URL`（`app.rag.vision.base-url`） | DashScope 默认 |
-| PDF 渲染 DPI | `APP_RAG_VISION_PDF_DPI`（`app.rag.vision.pdf-dpi`） | `150` |
-| 文档解析缓存类型 | `APP_RAG_CACHE_TYPE`（`app.rag.cache.type`） | `local`（`local`/`redis`） |
-| 流式思考开关 | `APP_STREAM_ENABLE_THINKING`（`app.stream.enable-thinking`） | `false` |
-| 文档解析缓存 TTL | `APP_RAG_CACHE_PARSE_TTL_HOURS`（`app.rag.cache.parse-ttl-hours`） | `24` |
-| 文档解析缓存容量上限 | `APP_RAG_CACHE_MAX_ENTRIES`（`app.rag.cache.max-entries`） | `100`（本地缓存条数上限，LRU 淘汰，防无界缓存耗尽内存） |
-| 附件注册表类型 | `APP_ATTACHMENT_REGISTRY_TYPE`（`app.attachment.registry.type`） | `local`（`local`/`redis`） |
-| 附件存活天数 | `APP_ATTACHMENT_TTL_DAYS`（`app.attachment.ttl-days`） | `7` |
-| 工具禁用状态存储类型 | `APP_TOOL_STORE_TYPE`（`app.tool.store.type`） | `local`（`local`/`redis`） |
-| 技能模块开关 | `APP_SKILL_ENABLED`（`app.skill.enabled`） | `false`（关闭时技能服务/工具/Controller 不加载） |
-| 技能包根目录 | `APP_SKILL_DIR`（`app.skill.dir`） | `./data/skills` |
-| 技能存储类型 | `APP_SKILL_STORE_TYPE`（`app.skill.store.type`） | `local`（`local`/`redis`） |
-| 技能脚本执行开关 | `APP_SKILL_EXEC_ENABLED`（`app.skill.exec.enabled`） | `false`（开启后 exec_skill 才允许执行） |
-| 技能脚本超时 | `APP_SKILL_EXEC_TIMEOUT_MS`（`app.skill.exec.timeout-ms`） | `30000`（超时强杀） |
-| 技能执行输出上限 | `APP_SKILL_EXEC_OUTPUT_MAX_CHARS`（`app.skill.exec.output-max-chars`） | `8192`（字符，超限截断） |
-| 技能解释器白名单 | `APP_SKILL_EXEC_INTERPRETER_ALLOW_LIST`（`app.skill.exec.interpreter-allow-list`） | `python3,node,bash,powershell` |
-| MCP 模块开关 | `APP_MCP_ENABLED`（`app.mcp.enabled`） | `false`（关闭时 MCP 服务/工具/Controller 不加载） |
-| MCP 服务器存储类型 | `APP_MCP_STORE_TYPE`（`app.mcp.store.type`） | `local`（`local`/`redis`） |
-| MCP 请求超时 | `APP_MCP_REQUEST_TIMEOUT_MS`（`app.mcp.request-timeout-ms`） | `15000`（毫秒，initialize/listTools/callTool） |
-| MCP 工具缓存 TTL | `APP_MCP_TOOL_CACHE_TTL_SECONDS`（`app.mcp.tool-cache-ttl-seconds`） | `60`（秒，过期重新 listTools 刷新） |
-| Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
-| Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
 
 ### Compaction 压缩流程
 
@@ -229,17 +191,30 @@ app:
 
 两个阈值独立可调，分别通过 `app.memory.vector.similarity-threshold`、`app.rag.min-score`、`app.memory.min-score` 配置。
 
+## 检索路由层
+
+进入主 LLM 之前，`RetrievalRouter` 先判定本次请求是否需要检索向量库、检索哪个：
+
+- **判定目标**（`RetrievalTarget`）：`NONE`（不检索，闲聊/创作或问题指向随消息上传的附件）/ `MEMORY`（只查会话记忆）/ `DOCUMENT`（只查文档知识库）/ `BOTH`（两者都查）
+- **分层判定（成本从低到高）**：
+  1. **附件指代优先**：会话名下存在附件且问题引用附件（"这个文档/附件/上传的文件"）→ 目标 `NONE`，附件内容走 `read_file` / `grep_file`（按 fileId），不拉全局检索库
+  2. **强指示词硬路由**：命中强文档词（"知识库/文档库/上传到知识库…"）→ `DOCUMENT`；命中强记忆词（"之前/刚才/你说过/我们聊过…"）→ `MEMORY`；两者都命中 → `BOTH`
+  3. **弱/歧义词**（"文档/文件/数据/报表…"）：不硬路由，`app.router.llm-fallback` 开启时走一次轻量 LLM 分类（注入附件 fileId 清单与最近对话历史消解"这个/那份"指代），否则默认 `BOTH` 保召回
+  4. **无关闲聊** → `NONE`；任何异常/LLM 失败 → `BOTH` 兜底，不引入新错误
+- **工具过滤**（`ToolResolver`）：按判定结果剔除不适用的检索工具；**文档知识库为空时强制剔除 `search_document`**，**会话名下无任何附件时剔除 `read_file` / `grep_file`**——无可检内容不下发工具，省一轮无效调用
+- **开关**：`app.router.enabled=false` 时路由不生效，`search_memory` / `search_document` 常驻（退回旧行为）；`history-size` 控制喂给路由器的最近对话条数，历史记忆懒加载（仅在 LLM 兜底分支才读取 STM）
+
 ## RAG 文档知识库
 
 - 文档按 `category == document` **全局共享**（不绑定 sessionId），会话记忆按 sessionId 隔离
 - 上传：`POST /api/rag/document`（multipart `file`），支持 txt/md/json/pdf（PDFBox）/docx/xlsx/xls（Apache POI）/csv（手写 RFC 4180）/png/jpg/jpeg/gif/webp/bmp（视觉描述）
-- PDF 解析走策略模式：优先提取文本层；图片型页面渲染为图片后由 dashscope 视觉模型（qwen-vl）**描述内容**入库，`app.rag.vision.enabled` 控制
-- **图片内容识别**：图片型 PDF 页面与直接上传的图片文件，均由 qwen-vl 将画面描述为文字后以纯文本入库；多模态能力只在入库时使用一次，检索与回答全程走纯文本链路（不依赖视觉模型也能回答）
-- **大文件防护**：上传单文件上限 50MB（`APP_MAX_FILE_SIZE`）；xlsx 走 SAX 流式读取避免整本加载；解析文本超过 `app.rag.max-text-length` 自动截断，防止内存溢出
-- **解析缓存**：以文件内容 SHA-256 为 key 缓存解析文本，重复上传同一文件直接跳过解析——图片型文档只在首次上传调用一次视觉模型，省 token；存储后端由 `app.rag.cache.type` 显式切换（`local` 本地内存 / `redis` Redis + TTL），与短期记忆配置互不影响
-- 检索：由 LLM 按需调用两个工具——`search_document`（查文档库）、`search_memory`（查本会话记忆）
-- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800；段数超过 500 跳过向量化直接固定切分，防大表格逐行成段导致海量 embedding 请求）
-   或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
+- PDF 解析走策略模式：优先提取文本层；图片型页面渲染为图片后由 OpenAI 兼容多模态模型（默认 qwen-vl，可指向任意兼容端点）**描述内容**入库，`app.rag.vision.enabled` 控制
+- **图片内容识别**：图片型 PDF 页面与直接上传的图片文件，均由视觉模型将画面描述为文字后以纯文本入库；多模态能力只在入库时使用一次，检索与回答全程走纯文本链路（不依赖视觉模型也能回答）
+- **大文件防护**：上传单文件上限 50MB（`APP_MAX_FILE_SIZE`）；xlsx 走 SAX 流式读取避免整本加载；csv 手写解析流式逐行处理；解析文本超过 `app.rag.max-text-length` 自动截断，防止内存溢出
+- **解析缓存**：以文件内容 SHA-256 为 key 缓存解析文本，重复上传同一文件直接跳过解析——图片型文档只在首次上传调用一次视觉模型，省 token；存储后端由 `app.rag.cache.type` 显式切换（`local` 本地内存 LRU / `redis` Redis + TTL），与短期记忆配置互不影响
+- **并发入库**：切块按 `app.rag.ingest-parallelism` 分 N 组并发写入向量库，每组内部仍按 `embed-batch-size` 分批 embedding
+- 检索：先经**检索路由层**判定（见上），再按需调用 `search_document`（查文档库）、`search_memory`（查本会话记忆）
+- 切块策略 `semantic`（embedding 相似度断点，默认百分位 95、buffer 3、max-chunk 800；段数超过 500 跳过向量化直接固定切分，防大表格逐行成段导致海量 embedding 请求）或 `fixed`（固定 token 数），由 `app.rag.splitter.strategy` 切换
 - 语义切块复用对话同一个 embedding 模型，保证切块/检索/对话向量空间一致
 
 ## 附件直传
@@ -247,12 +222,12 @@ app:
 对话时可携带文件附件，由 LLM 按需读取内容：
 
 - **三种来源**：JSON `attachments`（base64 / URL）、`POST /api/agent/chat/multipart`（multipart `files`）
-- **图片**：直接转为多模态 Media 随对话传模型，不落盘
+- **图片**：压缩后（最长边 1024、JPEG 质量 0.85，可配）直接转为多模态 Media 随对话传模型，不落盘
 - **文档/文本**：落盘登记 fileId，写入系统提示词告知 LLM 用 `read_file` / `grep_file` 工具读取；PDF/Word/Excel 懒解析为纯文本
 - **懒解析**：首次被工具读取时才解析（复用 `DocumentParserFactory`），解析结果 txt 与源文件一同落盘缓存
 - **会话隔离**：附件归属创建它的 sessionId，工具按 fileId 校验归属后才允许读取
 - **自动清理**：定时任务（默认每小时）扫描注册表，删除过期（默认 7 天）的原文件 + 懒解析 txt
-- **注册表可切换**：`app.attachment.registry.type` 为 `local`（默认，内存）/ `redis`（Redis + TTL，重启不丢），与其余存储配置互不影响
+- **注册表可切换**：`app.attachment.registry.type` 为 `local`（默认，内存）/ `redis`（重启不丢，过期同样由清理任务删除），与其余存储配置互不影响
 
 ## 工具调用
 
@@ -289,7 +264,7 @@ app:
 - **显式清空**：`DELETE /api/agent/skills/records/{sessionId}` 清空会话技能记录，清空后仅剩 global 技能
 - **静态预注册**：`app.skill.skills` 配置中的技能启动时入库（同名跳过）；`global: true` 的技能所有请求直接可用，无需记录
 - **工具过滤**：本次请求无可用技能时，三个技能工具从 LLM 工具列表剔除；工具内鉴权基于当前请求可用名单，未启用的技能调用被拒绝
-- **解释器判定三层**：SkillDefinition.interpreterMap 显式覆盖 → 扩展名映射（py→python3/js→node/sh→bash/ps1→powershell；exe/cmd/bat/jar 直接执行）→ shebang 兜底 → 结果须在白名单；Windows 自动映射 python3→python
+- **解释器判定三层**：SkillDefinition.interpreterMap 显式覆盖 → 扩展名映射（py→python3/js→node/sh→bash/ps1→powershell；exe/cmd/bat 直接执行、jar 以 `java -jar` 启动）→ shebang 兜底 → 结果须在白名单；Windows 自动映射 python3→python
 - **安全边界**：skillId/scriptName 拒绝路径分隔符与 `..`；技能目录归一化后必须落在根目录内；脚本执行开关 `app.skill.exec.enabled` 默认关闭；v1 无沙箱（脚本以应用同权限运行）
 
 ## MCP（Model Context Protocol）Client 模块
@@ -304,6 +279,112 @@ app:
 - **连接管理**：每服务器一把锁防并发首用重复拉起子进程；工具列表按 `app.mcp.tool-cache-ttl-seconds` 刷新；删除/禁用服务器或应用退出时关闭连接（stdio 结束子进程）；连接失败仅跳过该服务器，不影响其他服务器与本请求
 - **SDK 依赖**：`spring-ai-mcp`（BOM 管 1.0.0-M6）传递引入 MCP Java SDK `io.modelcontextprotocol.sdk:mcp:0.7.0`；stdio 用 `StdioClientTransport(ServerParameters)`，SSE 用 `HttpClientSseClientTransport(url)`（0.7.0 不支持 SSE 请求头）
 
+## 配置说明
+
+以下配置均在 `src/main/resources/application.yml`，均支持环境变量覆盖。
+
+### 基础（LLM / 服务）
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| API Key | `OPEN_AI_API_KEY` | 需自行填写 |
+| Base URL | `OPEN_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode` |
+| 对话模型 | `OPEN_AI_BASE_MODEL` | `qwen3.8-max` |
+| Embedding 端点（可独立于对话端点） | `OPEN_AI_EMBED_BASE_URL` | 复用对话 Base URL |
+| Embedding API Key | `OPEN_AI_EMBED_API_KEY` | 复用对话 API Key |
+| Embedding 模型 | `APP_EMBED_MODEL` | `text-embedding-v3`（换其他 embed 模型时需同步调整 Milvus `embedding-dimension`） |
+| HTTP 连接超时 | `APP_HTTP_CONNECT_TIMEOUT` | `60000`（毫秒） |
+| HTTP 读超时 | `APP_HTTP_READ_TIMEOUT` | `300000`（毫秒，qwen3.8-max 处理大图/复杂问题时思考耗时可达数分钟） |
+| 上传单文件上限 | `APP_MAX_FILE_SIZE` | `50MB` |
+| 上传单请求上限 | `APP_MAX_REQUEST_SIZE` | `60MB` |
+| Redis 地址 | `REDIS_HOST` / `REDIS_PORT` | `localhost:6379` |
+| Milvus 地址 | `MILVUS_HOST` / `MILVUS_PORT` | `localhost:19530` |
+
+### 记忆与向量检索
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 短期记忆类型 | `APP_MEMORY_STM_TYPE`（`app.memory.stm.type`） | `local` |
+| 长期记忆类型 | `APP_MEMORY_LTM_TYPE`（`app.memory.ltm.type`） | `local` |
+| 上下文窗口大小 | `APP_MEMORY_CONTEXT_MAX_TOKENS`（`app.memory.context.max-tokens`） | `128000` |
+| 向量检索相似度阈值（宽召回） | `APP_MEMORY_VECTOR_SIMILARITY_THRESHOLD`（`app.memory.vector.similarity-threshold`） | `0.2` |
+| 向量库写入 embedding 分批大小 | `APP_MEMORY_VECTOR_EMBED_BATCH_SIZE`（`app.memory.vector.embed-batch-size`） | `10`（条/请求，本地向量库批量入库、Milvus 走 batchingStrategy 分批、语义切块分批共用；dashscope 单请求上限 10 条） |
+| 记忆检索二次过滤阈值 | `APP_MEMORY_MIN_SCORE`（`app.memory.min-score`） | `0.35` |
+| 工具禁用状态存储 | `APP_TOOL_STORE_TYPE`（`app.tool.store.type`） | `local`（`local`/`redis`，重启不丢） |
+
+### RAG 文档入库
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 文档检索二次过滤阈值 | `APP_RAG_MIN_SCORE`（`app.rag.min-score`） | `0.35` |
+| 单文档解析文本长度上限 | `APP_RAG_MAX_TEXT_LENGTH`（`app.rag.max-text-length`） | `3000000` |
+| 切块并发入库并行度 | `APP_RAG_INGEST_PARALLELISM`（`app.rag.ingest-parallelism`） | `4`（切块分 N 组并发写入向量库，每组内部仍按 embed-batch-size 分批；429 时 Spring AI 自动重试） |
+| 文档解析缓存类型 | `APP_RAG_CACHE_TYPE`（`app.rag.cache.type`） | `local`（`local`/`redis`） |
+| 文档解析缓存 TTL | `APP_RAG_CACHE_PARSE_TTL_HOURS`（`app.rag.cache.parse-ttl-hours`） | `24` |
+| 文档解析缓存容量上限 | `APP_RAG_CACHE_MAX_ENTRIES`（`app.rag.cache.max-entries`） | `100`（本地缓存条数上限，LRU 淘汰，防无界缓存耗尽内存） |
+| 切块策略 | `APP_RAG_SPLITTER`（`app.rag.splitter.strategy`） | `semantic`（`semantic`/`fixed`） |
+| 固定切块 token 数 | `APP_RAG_FIXED_CHUNK`（`app.rag.splitter.fixed-chunk-size`） | `500` |
+| 语义断点模式 | `APP_RAG_SEMANTIC_MODE`（`app.rag.splitter.semantic-breakpoint-mode`） | `percentile` |
+| 语义断点百分位 | `APP_RAG_SEMANTIC_PERCENTILE`（`app.rag.splitter.semantic-percentile`） | `95` |
+| 语义聚合阈值 | `APP_RAG_SEMANTIC_THRESHOLD`（`app.rag.splitter.semantic-threshold`） | `0.7` |
+| 语义断点缓冲窗口 | `APP_RAG_SEMANTIC_BUFFER`（`app.rag.splitter.semantic-buffer-size`） | `3` |
+| 语义切块最大字符数 | `APP_RAG_SEMANTIC_MAX_CHUNK`（`app.rag.splitter.semantic-max-chunk`） | `800` |
+| 语义向量化段数上限 | `APP_RAG_SEMANTIC_MAX_SEGMENTS`（`app.rag.splitter.semantic-max-segments`） | `500`（超过则跳过向量化直接固定切分，防大表格逐行成段导致海量 embedding 请求） |
+| 图片视觉描述开关 | `APP_RAG_VISION_ENABLED`（`app.rag.vision.enabled`） | `true` |
+| 视觉描述模型 | `APP_RAG_VISION_MODEL`（`app.rag.vision.model`） | 空值复用主模型（`spring.ai.openai.chat.options.model`；可指向任意兼容视觉模型） |
+| 视觉描述 API Key | `APP_RAG_VISION_API_KEY`（`app.rag.vision.api-key`） | 复用对话 API Key |
+| 视觉描述服务地址 | `APP_RAG_VISION_BASE_URL`（`app.rag.vision.base-url`） | 复用主对话端点（compatible-mode） |
+| 视觉压缩后图片字节上限 | `APP_RAG_VISION_MAX_IMAGE_BYTES`（`app.rag.vision.max-image-bytes`） | `10485760`（10MB，超限跳过识别降级） |
+| 视觉并发请求上限 | `APP_RAG_VISION_MAX_CONCURRENCY`（`app.rag.vision.max-concurrency`） | `2`（信号量限流，封顶瞬时内存峰值） |
+| PDF 渲染 DPI | `APP_RAG_VISION_PDF_DPI`（`app.rag.vision.pdf-dpi`） | `150` |
+
+### 附件
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 附件落盘根目录 | `APP_ATTACHMENT_DIR`（`app.attachment.dir`） | `./data/attachments` |
+| 附件存活天数 | `APP_ATTACHMENT_TTL_DAYS`（`app.attachment.ttl-days`） | `7` |
+| 清理任务间隔 | `APP_ATTACHMENT_CLEANUP_INTERVAL_MS`（`app.attachment.cleanup-interval-ms`） | `3600000`（1 小时） |
+| 单附件大小上限 | `APP_ATTACHMENT_MAX_SIZE`（`app.attachment.max-size`） | `20971520`（20MB） |
+| 附件注册表类型 | `APP_ATTACHMENT_REGISTRY_TYPE`（`app.attachment.registry.type`） | `local`（`local`/`redis`） |
+| 附件检索默认行数 | `APP_ATTACHMENT_MAX_LINES`（`app.attachment.max-lines`） | `100`（grep_file 不传 maxLines 时的默认值） |
+| 附件工具单次行数上限 | `APP_ATTACHMENT_TOOL_MAX_LINES`（`app.attachment.tool-max-lines`） | `500`（read_file/grep_file 共用硬上限，超限截断） |
+| 附件工具单次字符上限 | `APP_ATTACHMENT_TOOL_MAX_CHARS`（`app.attachment.tool-max-chars`） | `12000`（超限截断并追加提示） |
+| 图片最长边上限 | `APP_ATTACHMENT_IMAGE_MAX_DIMENSION`（`app.attachment.image.max-dimension`） | `1024`（超过等比缩小；设 0 表示不压缩） |
+| 图片 JPEG 重编码质量 | `APP_ATTACHMENT_IMAGE_JPEG_QUALITY`（`app.attachment.image.jpeg-quality`） | `0.85`（带透明通道保持 PNG） |
+
+### 流式 / 技能 / MCP
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 流式思考开关 | `APP_STREAM_ENABLE_THINKING`（`app.stream.enable-thinking`） | `false` |
+| 技能模块开关 | `APP_SKILL_ENABLED`（`app.skill.enabled`） | `false`（关闭时技能服务/工具/Controller 不加载） |
+| 技能包根目录 | `APP_SKILL_DIR`（`app.skill.dir`） | `./data/skills` |
+| 技能存储类型 | `APP_SKILL_STORE_TYPE`（`app.skill.store.type`） | `local`（`local`/`redis`） |
+| 技能脚本执行开关 | `APP_SKILL_EXEC_ENABLED`（`app.skill.exec.enabled`） | `false`（开启后 exec_skill 才允许执行） |
+| 技能脚本超时 | `APP_SKILL_EXEC_TIMEOUT_MS`（`app.skill.exec.timeout-ms`） | `30000`（超时强杀） |
+| 技能执行输出上限 | `APP_SKILL_EXEC_OUTPUT_MAX_CHARS`（`app.skill.exec.output-max-chars`） | `8192`（字符，超限截断） |
+| 技能解释器白名单 | `APP_SKILL_EXEC_INTERPRETER_ALLOW_LIST`（`app.skill.exec.interpreter-allow-list`） | `python3,node,bash,powershell` |
+| MCP 模块开关 | `APP_MCP_ENABLED`（`app.mcp.enabled`） | `false`（关闭时 MCP 服务/工具/Controller 不加载） |
+| MCP 服务器存储类型 | `APP_MCP_STORE_TYPE`（`app.mcp.store.type`） | `local`（`local`/`redis`，重启不丢） |
+| MCP 请求超时 | `APP_MCP_REQUEST_TIMEOUT_MS`（`app.mcp.request-timeout-ms`） | `15000`（毫秒，initialize/listTools/callTool） |
+| MCP 工具缓存 TTL | `APP_MCP_TOOL_CACHE_TTL_SECONDS`（`app.mcp.tool-cache-ttl-seconds`） | `60`（秒，过期重新 listTools 刷新） |
+
+### 检索路由
+
+| 配置 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 路由总开关 | `APP_ROUTER_ENABLED`（`app.router.enabled`） | `true`（false 时 search_memory/search_document 常驻，退回旧行为） |
+| 歧义词 LLM 兜底 | `APP_ROUTER_LLM_FALLBACK`（`app.router.llm-fallback`） | `true`（false 时歧义词一律默认 both 保召回） |
+| 路由历史条数 | `APP_ROUTER_HISTORY_SIZE`（`app.router.history-size`） | `6`（喂给路由器的最近对话条数，用于消解"这个/那份"指代） |
+| 路由专用 LLM 地址 | `APP_ROUTER_LLM_BASE_URL`（`app.router.llm.base-url`） | 空值回落主对话配置（可独立指向 qwen/DeepSeek） |
+| 路由专用 LLM Key | `APP_ROUTER_LLM_API_KEY`（`app.router.llm.api-key`） | 空值回落主对话 Key |
+| 路由专用 LLM 模型 | `APP_ROUTER_LLM_MODEL`（`app.router.llm.model`） | 空值回落主对话模型 |
+| 路由温度 | `APP_ROUTER_LLM_TEMPERATURE`（`app.router.llm.temperature`） | `0.0` |
+| 路由最大 token | `APP_ROUTER_LLM_MAX_TOKENS`（`app.router.llm.max-tokens`） | `256` |
+| 路由结构化输出模式 | `APP_ROUTER_LLM_RESPONSE_FORMAT`（`app.router.llm.response-format`） | `json_object`（`none`/`json_object`/`json_schema`；非 none 时 max-tokens 不生效） |
+| 路由输出不合规重试次数 | `APP_ROUTER_LLM_MAX_RETRIES`（`app.router.llm.max-retries`） | `1`（解析失败/target 非法时把错误反馈给模型重出） |
+
 ## 项目结构
 
 ```
@@ -315,28 +396,43 @@ src/main/java/com/litlebro/agent/
 │   ├── SessionController.java      # 会话状态查询（/api/agent/session/{id}）
 │   ├── MemoryController.java       # 会话长期记忆查询（/api/agent/memory/{id}）
 │   ├── DocumentController.java     # 文档知识库上传 / 删除
+│   ├── SkillController.java        # 技能注册/列表/删除/记录清空（随模块开关加载）
 │   └── McpController.java          # MCP 服务器管理（/api/agent/mcp，随模块开关加载）
 ├── service/                        # 业务核心
-│   ├── AgentService.java           # 协调 LLM、工具、记忆、压缩
-│   ├── AgentStreamService.java     # 流式对话编排（SSE）
+│   ├── AgentService.java           # 阻塞式对话（协调 LLM、工具、记忆、压缩）
+│   ├── AgentStreamService.java     # 流式对话编排层（SSE，复用下方 stream 组件）
 │   ├── DocumentService.java        # 文档入库：解析 → 切块 → 向量化
-│   └── stream/                     # 流式对话底层组件（SSE 客户端/工具执行/事件推送）
+│   └── stream/                     # 流式对话底层组件（复用/拆分自 AgentStreamService）
+│       ├── OpenAiSseClient.java       # 原始 SSE 调用 + 分块解析（含 reasoning_content）
+│       ├── StreamingToolExecutor.java # 工具 Schema 组装 + 执行回填
+│       ├── OpenAiMessageConverter.java # Spring AI Message → OpenAI 协议消息
+│       ├── ToolCall.java               # 工具调用模型
+│       └── StreamEventSender.java      # SSE 事件推送工具
 ├── common/
-│   ├── Constant.java               # 常量统一管理
+│   ├── Constant.java               # 常量统一管理（记忆类型 / 元数据键 / 上限）
+│   ├── ChatContentRole.java        # 内容角色常量
 │   └── SystemPrompt.java           # 全部提示词（对话/压缩/视觉/工具说明）
-├── config/
-│   └── AppConfig.java              # 全局 Bean 装配中心（STM/LTM/会话/rag 缓存/附件/工具禁用/技能）
 ├── context/                        # 上下文管理
 │   ├── ContextManager.java         # 上下文组装 + 溢出压缩 + restoreContextIfEmpty
 │   ├── CompressionService.java     # 对话历史压缩（增量）
 │   └── SessionContextHolder.java   # ThreadLocal 会话上下文（sessionId + 本次可用技能名单）
+├── config/                         # 全局 Bean 装配中心
+│   ├── AppConfig.java              # 装配 STM/LTM/会话/rag 缓存/附件/工具禁用/技能（@EnableAsync/@EnableScheduling）
+│   ├── LlmSettings.java            # LLM 端点/模型设置模型
+│   └── RestClientConfig.java       # 统一 RestClient（连接/读超时）
+├── router/                         # 检索前路由层
+│   ├── RetrievalRouter.java        # 判定请求指向记忆/文档/附件/都不查（强词/歧义词/LLM 兜底）
+│   ├── RetrievalTarget.java        # 路由目标枚举（NONE/MEMORY/DOCUMENT/BOTH）
+│   ├── RouterDecision.java         # 路由决策模型
+│   └── RouterProperties.java       # 路由配置绑定（app.router.*）
 ├── memory/                         # 记忆模块
-│   ├── MessageCodec.java           # 对话消息与 AgentMessage 互转
 │   ├── MemoryStore.java            # 长期记忆存储抽象接口
 │   ├── VectorMemoryStore.java      # 向量记忆存储封装
-│   ├── LongTermMemoryService.java  # 长期记忆业务
+│   ├── LongTermMemoryService.java  # 长期记忆业务（摘要存取 + 上下文构建；saveChats 异步持久化）
+│   ├── MessageCodec.java           # 对话消息与 AgentMessage 互转
 │   ├── model/AgentMessage.java     # 统一消息模型
-│   └── external/                   # Redis + Milvus 实现
+│   └── external/
+│       └── RedisChatMemory.java    # 短期记忆（30 分钟 TTL，Lua 原子追加）
 ├── session/                        # 会话状态管理
 │   ├── SessionManager.java         # 会话状态抽象接口
 │   ├── AbstractSessionManager.java # 公共业务逻辑（token/轮次/模型合并）
@@ -346,7 +442,7 @@ src/main/java/com/litlebro/agent/
 ├── tool/                           # LLM 可调用工具
 │   ├── AgentTool.java              # 工具抽象接口（含默认 id()：类名首字母小写，跨重启稳定）
 │   ├── ToolRegistry.java           # 工具注册表（按谓词过滤工具集；按 ID 禁用/启用；MCP 工具并入管理面）
-│   ├── ToolResolver.java           # 会话级统一工具解析器（内置/技能 + MCP 合并为 List<ToolCallback>）
+│   ├── ToolResolver.java           # 会话级统一工具解析器（内置/技能 + MCP 合并 + 路由/空库/附件过滤）
 │   ├── ToolDisabledStore.java      # 工具禁用状态存储抽象接口
 │   ├── local/LocalToolDisabledStore.java   # 禁用状态内存实现（默认）
 │   ├── external/RedisToolDisabledStore.java # 禁用状态 Redis 实现（无 TTL）
@@ -373,7 +469,8 @@ src/main/java/com/litlebro/agent/
 ├── skill/                          # 技能（Skills）模块（@ConditionalOnProperty(app.skill.enabled) 门控）
 │   ├── SkillService.java           # 注册校验/静态预注册/记录鉴权/解释器判定/编排
 │   ├── SkillProperties.java        # 配置绑定（app.skill.*）
-│   ├── SkillExecutor.java / LocalSkillExecutor.java  # 脚本执行器（本地进程）
+│   ├── SkillExecutor.java / LocalSkillExecutor.java  # 脚本执行器（本地进程，超时强杀/输出截断）
+│   ├── SkillExecRequest.java / SkillExecResult.java  # 执行请求/结果模型
 │   ├── model/SkillDefinition.java  # 技能定义
 │   ├── store/SkillStore.java       # 技能存储抽象（定义 CRUD + 会话技能记录）
 │   ├── local/LocalSkillStore.java  # 本地内存实现（默认，记录无 TTL）
@@ -382,22 +479,24 @@ src/main/java/com/litlebro/agent/
 │   ├── AttachmentEntry.java        # 附件条目（fileId/归属/路径/过期）
 │   ├── AttachmentRegistry.java     # 附件注册表抽象接口
 │   ├── AttachmentStore.java        # 落盘/懒解析/删除/清理
+│   ├── AttachmentAssembler.java    # 附件组装（图片 Media/dataURI + 文档 fileId）
 │   ├── AttachmentCleanupTask.java  # 定时清理任务（@Scheduled）
+│   ├── ImageCompressor.java        # 图片压缩（限解码尺寸，防解压炸弹）
 │   ├── local/LocalAttachmentRegistry.java   # 注册表本地内存实现（默认）
-│   ├── external/RedisAttachmentRegistry.java # 注册表 Redis 实现（TTL，重启不丢）
+│   ├── external/RedisAttachmentRegistry.java # 注册表 Redis 实现（重启不丢）
 │   └── resolver/                   # 附件来源解析策略（base64/url/multipart）
 │       ├── AttachmentResolver.java          # 解析策略接口
 │       ├── AttachmentResolverFactory.java   # 解析策略工厂
 │       ├── AttachmentInput.java             # 附件来源输入
 │       ├── ResolvedAttachment.java          # 统一字节形态
 │       ├── Base64AttachmentResolver.java
-│       ├── UrlAttachmentResolver.java
+│       ├── UrlAttachmentResolver.java       # 流式下载 + SSRF 防护
 │       └── MultipartAttachmentResolver.java
 ├── rag/                           # 文档处理核心
 │   ├── DocumentParseCache.java    # 解析缓存抽象接口（文件哈希→文本）
-│   ├── local/LocalDocumentParseCache.java # 解析缓存本地内存实现（默认）
+│   ├── local/LocalDocumentParseCache.java # 解析缓存本地内存实现（默认，LRU）
 │   ├── external/RedisDocumentParseCache.java # 解析缓存 Redis 实现（TTL）
-│   ├── SemanticTextSplitter.java  # 语义切块器
+│   ├── SemanticTextSplitter.java  # 语义切块器（embedding 相似度断点）
 │   ├── DocumentSplitterFactory.java # 切块策略工厂
 │   └── parser/                    # 文件解析策略
 │       ├── DocumentParser.java    # 解析策略接口
@@ -407,20 +506,19 @@ src/main/java/com/litlebro/agent/
 │       ├── WordDocumentParser.java   # Word（docx，Apache POI）
 │       ├── SpreadsheetDocumentParser.java # 表格（xlsx/xls/csv，POI 流式 + 手写 CSV）
 │       ├── ImageDocumentParser.java  # 图片（png/jpg/jpeg/gif/webp/bmp）
-│       └── VisionDescribeService.java # 图片视觉描述（dashscope qwen-vl）
+│       └── VisionDescribeService.java # 图片视觉描述（OpenAI 兼容视觉模型，默认 qwen-vl）
+├── vectorstore/                   # 向量库存储适配
+│   ├── BatchingSimpleVectorStore.java # 本地向量库分批向量化（覆写 doAdd，替代逐条 embed）
+│   └── CountBatchingStrategy.java     # 按条数分批策略（挂到 Milvus builder，防超单请求条数上限）
 ├── dto/                            # 请求/响应结构
 │   ├── ChatRequest.java            # question + sessionId + skillIds + mcpServerIds + attachments
 │   ├── ChatResponse.java
 │   ├── ErrorResponse.java
-│   └── DocumentIngestResult.java   # 文档入库结果
+│   ├── FileAttachment.java         # 附件条目（type/content 等）
+│   ├── DocumentIngestResult.java   # 文档入库结果（docId/source/chunkCount）
+│   └── StreamEvent.java            # 流式事件载体
 └── exception/GlobalExceptionHandler.java  # 全局异常处理（400/404/500 统一错误结构）
 ```
-
-## 开发约定
-
-- 源码含中文注释，文件统一 UTF-8（无 BOM）
-- 不使用 Lombok，模型类手写 getter/setter（开源项目避免额外注解处理依赖）
-- 新增存储实现遵循「本地实现放 `local`、外部实现放 `external`、共享抽象（接口/配置/条件）留在根包」的布局
 
 ## License
 
