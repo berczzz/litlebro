@@ -28,8 +28,9 @@ public final class SystemPrompt {
 
     /**
      * 上下文压缩提示词
-     * 在已有摘要的基础上追加新信息，而非从零总结。
+     * 在已有摘要的基础上追加新信息，而非从零总结，并顺带提取持久事实。
      * 三个占位符依次为：摘要操作指令、压缩模板、对话历史。
+     * 输出要求为结构化 JSON：{summary, facts[]}。
      */
     public static final String COMPACTION_REQUEST = """
             %s
@@ -38,7 +39,18 @@ public final class SystemPrompt {
             对话历史:
             %s
             
-            请生成更新后的摘要（保留所有仍然有效的细节，删除已过时的信息，合并新事实）:""";
+            请生成更新后的摘要，并提取持久事实。输出必须是一个合法的 JSON 对象，仅包含两个字段：
+            {
+              "summary": "更新后的摘要（Markdown，结构见上方模板；保留所有仍然有效的细节，删除已过时的信息，合并新事实）",
+              "facts": ["持久事实1", "持久事实2", "..."]
+            }
+            
+            facts 提取规则：
+            - 只收录跨会话/后续工作仍有价值的持久事实、已做决定、约定、用户偏好、项目约定
+            - 剔除过程性、临时性、已过时或被后续对话推翻的内容
+            - 提炼为要点，不要输出对话原文，不要输出无意义的寒暄
+            - 保留确切的符号、命令、错误字符串、URL、标识符与关键数值
+            - 没有持久事实时输出空数组 []""";
 
     /** 首次压缩：从对话历史中新建摘要 */
     public static final String COMPACTION_INITIAL = "从对话历史中创建一个新的摘要。";
@@ -49,7 +61,7 @@ public final class SystemPrompt {
                     + "<已有摘要>\n%s\n</已有摘要>";
 
     public static final String COMPACTION_TEMPLATE = """
-            Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
+            严格按照 <template> 标签内的 Markdown 结构输出，保持各小节顺序不变。输出中不要包含 <template> 标签本身。
             <template>
             ## 目标
             - [用一两句话描述用户在尝试完成什么]
@@ -82,9 +94,6 @@ public final class SystemPrompt {
             - 不要提及摘要过程或上下文已被压缩。""";
 
     // ==================== 会话摘要前缀 ====================
-
-    /** 压缩后注入 ChatMemory 的摘要前缀，用于标记首条 SystemMessage 为压缩摘要 */
-    public static final String SUMMARY_PREFIX = "之前的对话摘要:\n";
 
     // ==================== 检索路由 ====================
 

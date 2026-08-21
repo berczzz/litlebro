@@ -16,7 +16,7 @@ public interface MemoryStore {
 
     List<AgentMessage> searchByCategory(String sessionId, String category, int limit);
 
-    void delete(String memoryId);
+    void delete(String sessionId, String memoryId);
 
-    AgentMessage getById(String memoryId);
+    AgentMessage getById(String sessionId, String memoryId);
 }

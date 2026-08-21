@@ -8,7 +8,10 @@ import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
 import com.litlebro.agent.memory.LongTermMemoryService;
 import com.litlebro.agent.memory.MessageCodec;
+import com.litlebro.agent.memory.ShardedMilvusVectorStoreRouter;
+import com.litlebro.agent.memory.SingleVectorStoreRouter;
 import com.litlebro.agent.memory.VectorMemoryStore;
+import com.litlebro.agent.memory.VectorStoreRouter;
 import com.litlebro.agent.memory.external.RedisChatMemory;
 import com.litlebro.agent.mcp.McpServerProperties;
 import com.litlebro.agent.mcp.external.RedisMcpServerStore;
@@ -71,6 +74,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 全局 Bean 装配中心。
  *
@@ -132,6 +138,12 @@ public class AppConfig {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "local", matchIfMissing = true)
+    public VectorStoreRouter singleVectorStoreRouter(VectorStore simpleVectorStore) {
+        return new SingleVectorStoreRouter(simpleVectorStore, "agent_memories");
+    }
+
+    @Bean
     @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "milvus")
     public MilvusServiceClient milvusClient(
             @Value("${spring.ai.vectorstore.milvus.client.host:localhost}") String host,
@@ -147,16 +159,47 @@ public class AppConfig {
         return new MilvusServiceClient(builder.build());
     }
 
+    /**
+     * Milvus 分片向量库路由器：按 {@code sessionId} 哈希取模路由到 N 个分片 collection，
+     * 文档知识库走独立 collection（{@code agent_memories_doc}）。
+     *
+     * <p>分片数由 {@code app.memory.ltm.milvus-shards} 控制（默认 16）。分片天然摊薄单 collection
+     * 数据量与 filter 扫描范围；metadata 为 JSON 字段无法建标量索引（Milvus 2.3），
+     * 但分片 + sessionId 过滤已足够收敛查询集。
+     *
+     * <p>collection 首次写入时由 {@code initializeSchema(true)} 自动建表，无需手工迁移；
+     * 全新部署无存量数据，无需数据搬迁。
+     */
     @Bean
     @ConditionalOnProperty(name = "app.memory.ltm.type", havingValue = "milvus")
-    public VectorStore milvusVectorStore(MilvusServiceClient milvusClient,
-                                         EmbeddingModel embeddingModel,
-                                         @Value("${app.memory.vector.embed-batch-size:10}") int embedBatchSize,
-                                         @Value("${spring.ai.vectorstore.milvus.database-name:default}") String databaseName,
-                                         @Value("${spring.ai.vectorstore.milvus.collection-name:vector_store}") String collectionName,
-                                         @Value("${spring.ai.vectorstore.milvus.embedding-dimension:1536}") int embeddingDimension,
-                                         @Value("${spring.ai.vectorstore.milvus.index-type:IVF_FLAT}") String indexType,
-                                         @Value("${spring.ai.vectorstore.milvus.metric-type:COSINE}") String metricType) {
+    public VectorStoreRouter milvusShardedRouter(MilvusServiceClient milvusClient,
+                                                 EmbeddingModel embeddingModel,
+                                                 @Value("${app.memory.vector.embed-batch-size:10}") int embedBatchSize,
+                                                 @Value("${spring.ai.vectorstore.milvus.database-name:default}") String databaseName,
+                                                 @Value("${app.memory.ltm.milvus-collection-prefix:agent_memories}") String collectionPrefix,
+                                                 @Value("${app.memory.ltm.milvus-shards:16}") int shards,
+                                                 @Value("${spring.ai.vectorstore.milvus.embedding-dimension:1536}") int embeddingDimension,
+                                                 @Value("${spring.ai.vectorstore.milvus.index-type:IVF_FLAT}") String indexType,
+                                                 @Value("${spring.ai.vectorstore.milvus.metric-type:COSINE}") String metricType) {
+        int shardCount = Math.max(1, shards);
+        List<VectorStore> memoryShards = new ArrayList<>(shardCount);
+        List<String> names = new ArrayList<>(shardCount + 1);
+        for (int i = 0; i < shardCount; i++) {
+            String name = collectionPrefix + "_" + i;
+            memoryShards.add(buildMilvusStore(milvusClient, embeddingModel, databaseName, name,
+                    embedBatchSize, embeddingDimension, indexType, metricType));
+            names.add(name);
+        }
+        String docName = collectionPrefix + "_doc";
+        VectorStore docStore = buildMilvusStore(milvusClient, embeddingModel, databaseName, docName,
+                embedBatchSize, embeddingDimension, indexType, metricType);
+        names.add(docName);
+        return new ShardedMilvusVectorStoreRouter(memoryShards, docStore, names);
+    }
+
+    private static VectorStore buildMilvusStore(MilvusServiceClient milvusClient, EmbeddingModel embeddingModel,
+                                                String databaseName, String collectionName, int embedBatchSize,
+                                                int embeddingDimension, String indexType, String metricType) {
         return MilvusVectorStore.builder(milvusClient, embeddingModel)
                 .databaseName(databaseName)
                 .collectionName(collectionName)
@@ -399,6 +442,38 @@ public class AppConfig {
     // ==================== 异步任务 ====================
 
     /**
+     * 上下文压缩专用 ChatClient：无 advisor/defaultSystem，与主对话 {@code chatClient} 隔离，
+     * 避免压缩调用污染会话记忆（主 chatClient 挂 MessageChatMemoryAdvisor，会把它也当一轮对话写入）。
+     *
+     * <p>复用主对话 OpenAI 兼容端点与 Key/模型；固定低温 + json_object 结构化输出，
+     * 配合 {@link CompressionService} 的 BeanOutputConverter 解析 {summary, facts[]}。
+     */
+    @Bean("compactionChatClient")
+    public ChatClient compactionChatClient(LlmSettings llm, RestClient.Builder restClientBuilder) {
+        OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
+                .baseUrl(llm.getChatBaseUrl())
+                // 复用宽松 RestClient.Builder，保证未知字段容忍与 HTTP 超时（见 routerChatClient 注释）
+                .restClientBuilder(restClientBuilder);
+        // 空 apiKey 不设置，避免 Builder 校验抛异常
+        if (StringUtils.hasText(llm.getChatApiKey())) {
+            apiBuilder.apiKey(llm.getChatApiKey());
+        }
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .model(llm.getChatModel())
+                .temperature(0.0)
+                .maxTokens(8192)
+                .responseFormat(ResponseFormat.builder().type(ResponseFormat.Type.JSON_OBJECT).build())
+                .build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .openAiApi(apiBuilder.build())
+                .defaultOptions(options)
+                .build();
+        return ChatClient.builder(chatModel).build();
+    }
+
+    // ==================== 异步任务 ====================
+
+    /**
      * 长期记忆持久化专用线程池：{@code @Async("ltmTaskExecutor")} 的 saveChats 在此执行，
      * 避免 embedding + 向量入库阻塞对话输出。
      */
@@ -409,6 +484,21 @@ public class AppConfig {
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(500);
         executor.setThreadNamePrefix("ltm-persist-");
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 后台压缩专用线程池：{@code ContextManager.triggerCompactionIfNeeded} 在此执行，
+     * 与 LTM 持久化（ltmTaskExecutor）隔离，避免压缩任务被 saveChats 排队拖住。
+     */
+    @Bean
+    public ThreadPoolTaskExecutor compactionTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("compact-");
         executor.initialize();
         return executor;
     }
@@ -448,16 +538,16 @@ public class AppConfig {
 
     @Bean
     public VectorMemoryStore vectorMemoryStore(
-            VectorStore vectorStore,
+            VectorStoreRouter vectorStoreRouter,
             @Value("${app.memory.vector.similarity-threshold:0.2}") double similarityThreshold,
             @Qualifier("ingestExecutor") AsyncTaskExecutor ingestExecutor,
             @Value("${app.rag.ingest-parallelism:4}") int ingestParallelism) {
-        return new VectorMemoryStore(vectorStore, similarityThreshold, ingestExecutor, ingestParallelism);
+        return new VectorMemoryStore(vectorStoreRouter, similarityThreshold, ingestExecutor, ingestParallelism);
     }
 
     @Bean
-    public CompressionService compressionService(ChatClient chatClient) {
-        return new CompressionService(chatClient);
+    public CompressionService compressionService(@Qualifier("compactionChatClient") ChatClient compactionChatClient) {
+        return new CompressionService(compactionChatClient);
     }
 
     @Bean

@@ -6,6 +6,7 @@ import com.litlebro.agent.common.Constant;
 import com.litlebro.agent.memory.model.AgentMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -21,6 +22,9 @@ import java.util.concurrent.Future;
  *
  * <p>记忆按会话（sessionId）隔离，每条记忆记录所属会话，
  * 检索时通过 sessionId 过滤避免跨会话混淆。
+ *
+ * <p>物理存储布局经 {@link VectorStoreRouter} 屏蔽：本地单实例 / Milvus 多分片。
+ * 文档知识库（category == document）走路由器专用存储，与会话记忆物理隔离。
  *
  * <p>存储对象与短期记忆共用统一的 {@link AgentMessage} 实体：
  * 文本（text）用于向量化语义检索，嵌套结构（media/toolCalls/toolResponses）
@@ -41,7 +45,7 @@ public class VectorMemoryStore implements MemoryStore {
      */
     private final double similarityThreshold;
 
-    private final VectorStore vectorStore;
+    private final VectorStoreRouter router;
 
     /**
      * 文档切块并发入库线程池（{@code ingestExecutor}）。
@@ -71,9 +75,9 @@ public class VectorMemoryStore implements MemoryStore {
 
     private static final long DOCUMENT_COUNT_UNKNOWN = -1;
 
-    public VectorMemoryStore(VectorStore vectorStore, double similarityThreshold,
+    public VectorMemoryStore(VectorStoreRouter router, double similarityThreshold,
                              AsyncTaskExecutor ingestExecutor, int ingestParallelism) {
-        this.vectorStore = vectorStore;
+        this.router = router;
         this.similarityThreshold = similarityThreshold;
         this.ingestExecutor = ingestExecutor;
         this.ingestParallelism = Math.max(1, ingestParallelism);
@@ -87,24 +91,28 @@ public class VectorMemoryStore implements MemoryStore {
     /**
      * 批量存储多条记忆，合并为单次向量化请求写入向量库，
      * 减少 embedding HTTP 调用次数（一次对话的用户/助手消息合并入库）。
+     *
+     * <p>按消息所属会话路由到对应分片存储，同会话消息仍合并为单次写入。
      */
     public void saveAll(List<AgentMessage> agentMessages) {
         if (CollectionUtils.isEmpty(agentMessages)) {
             return;
         }
         try {
-            List<Document> docs = new ArrayList<>(agentMessages.size());
+            Map<VectorStore, List<Document>> byStore = new LinkedHashMap<>();
             for (AgentMessage am : agentMessages) {
                 Document doc = toDocument(am);
-                if (doc != null) {
-                    docs.add(doc);
+                if (doc == null) {
+                    continue;
                 }
+                byStore.computeIfAbsent(router.forSession(am.sessionId()), k -> new ArrayList<>()).add(doc);
             }
-            if (docs.isEmpty()) {
-                return;
+            int total = 0;
+            for (Map.Entry<VectorStore, List<Document>> entry : byStore.entrySet()) {
+                entry.getKey().add(entry.getValue());
+                total += entry.getValue().size();
             }
-            vectorStore.add(docs);
-            log.debug("向量记忆已批量存储 count={}", docs.size());
+            log.debug("向量记忆已批量存储 count={}", total);
         } catch (Exception e) {
             log.warn("向量记忆存储失败，已跳过写入 原因: {}", e.getMessage());
         }
@@ -119,7 +127,6 @@ public class VectorMemoryStore implements MemoryStore {
             metadata.put(Constant.MD_CATEGORY, agentMessage.category());
             metadata.put(Constant.MD_TYPE, Constant.MEMORY_TYPE);
             metadata.put(Constant.MD_MESSAGE_TYPE, agentMessage.messageType());
-            metadata.put(Constant.MD_ROLE, agentMessage.role());
             if (agentMessage.metadata() != null) {
                 metadata.putAll(agentMessage.metadata());
             }
@@ -160,9 +167,9 @@ public class VectorMemoryStore implements MemoryStore {
     }
 
     @Override
-    public AgentMessage getById(String memoryId) {
+    public AgentMessage getById(String sessionId, String memoryId) {
         try {
-            List<Document> docs = vectorStore.similaritySearch(
+            List<Document> docs = router.forSession(sessionId).similaritySearch(
                     SearchRequest.builder()
                             .query(memoryId)
                             .topK(1)
@@ -170,33 +177,71 @@ public class VectorMemoryStore implements MemoryStore {
                             .similarityThreshold(0.0)
                             .build()
             );
-            return CollectionUtils.isEmpty(docs) ? null : toAgentMessage(docs.get(0));
+            if (!CollectionUtils.isEmpty(docs)) {
+                return toAgentMessage(docs.get(0));
+            }
         } catch (Exception e) {
-            log.warn("按 ID 查询长期记忆失败 id={} 原因: {}", memoryId, e.getMessage());
-            return null;
+            log.warn("按 ID 查询长期记忆失败 sessionId={} id={} 原因: {}", sessionId, memoryId, e.getMessage());
         }
+        return null;
     }
 
     @Override
-    public void delete(String memoryId) {
+    public void delete(String sessionId, String memoryId) {
         try {
-            vectorStore.delete("id == '" + memoryId + "'");
-            log.debug("向量记忆已删除 id={}", memoryId);
+            router.forSession(sessionId).delete("id == '" + memoryId + "'");
         } catch (Exception e) {
-            log.warn("按 ID 删除长期记忆失败 id={} 原因: {}", memoryId, e.getMessage());
+            log.warn("按 ID 删除长期记忆失败 sessionId={} id={} 原因: {}", sessionId, memoryId, e.getMessage());
         }
+        log.debug("向量记忆已删除 sessionId={} id={}", sessionId, memoryId);
     }
 
-    public List<Document> searchMemories(String sessionId, String query, int topK) {
+    /**
+     * 会话记忆语义检索：支持按分类列表检索。
+     *
+     * <p>为规避向量库 filter 表达式中 {@code IN + &&} 组合在不同实现下的兼容性坑
+     * （部分实现会拼出非法表达式并静默返回空），这里按分类逐个执行 EQ 过滤检索，
+     * 在内存中合并去重，再按相似度倒序截取 topK。检索跨全部相关分类。
+     *
+     * @param sessionId  会话 ID（路由到对应分片）
+     * @param query      检索词
+     * @param topK       返回条数上限
+     * @param categories 参与检索的分类列表；null/空表示全部分类
+     * @return 合并去重后的命中结果（按相似度倒序）
+     */
+    public List<Document> searchMemories(String sessionId, String query, int topK, List<String> categories) {
         try {
-            return vectorStore.similaritySearch(
-                    SearchRequest.builder()
-                            .query(query)
-                            .topK(topK)
-                            .filterExpression("sessionId == '" + sessionId + "'")
-                            .similarityThreshold(similarityThreshold)
-                            .build()
-            );
+            VectorStore store = router.forSession(sessionId);
+            List<Document> merged = new ArrayList<>();
+            Set<String> seenIds = new HashSet<>();
+            List<String> cats = (categories == null || categories.isEmpty())
+                    ? List.of((String) null)
+                    : categories;
+            for (String category : cats) {
+                String filter = category != null
+                        ? "sessionId == '" + sessionId + "' && category == '" + category + "'"
+                        : "sessionId == '" + sessionId + "'";
+                List<Document> docs = store.similaritySearch(
+                        SearchRequest.builder()
+                                .query(query)
+                                .topK(Math.max(topK, 10))
+                                .filterExpression(filter)
+                                .similarityThreshold(similarityThreshold)
+                                .build()
+                );
+                for (Document doc : docs) {
+                    String id = doc.getId();
+                    if (id != null && seenIds.add(id)) {
+                        merged.add(doc);
+                    }
+                }
+            }
+            merged.sort(Comparator.comparingDouble((Document d) ->
+                    d.getScore() != null ? d.getScore() : -1.0).reversed());
+            if (merged.size() > topK) {
+                return new ArrayList<>(merged.subList(0, topK));
+            }
+            return merged;
         } catch (Exception e) {
             log.warn("长期记忆检索失败，已降级为空结果 sessionId={} query={} 原因: {}",
                     sessionId, query, e.getMessage());
@@ -204,17 +249,24 @@ public class VectorMemoryStore implements MemoryStore {
         }
     }
 
+    /**
+     * 兼容旧签名：按全部分类检索（摘要 + 事实 + 原文统一候选池）。
+     */
+    public List<Document> searchMemories(String sessionId, String query, int topK) {
+        return searchMemories(sessionId, query, topK, null);
+    }
+
     public List<Document> searchByCategoryNoThreshold(String sessionId, String category, int limit) {
         try {
             String filter = category != null
                     ? "sessionId == '" + sessionId + "' && category == '" + category + "'"
                     : "sessionId == '" + sessionId + "'";
-            return vectorStore.similaritySearch(
+            return router.forSession(sessionId).similaritySearch(
                     SearchRequest.builder()
                             .query("")
                             .topK(limit)
                             .filterExpression(filter)
-                            .similarityThreshold(0.0)
+                            .similarityThreshold(-1.0)
                             .build()
             );
         } catch (Exception e) {
@@ -239,12 +291,12 @@ public class VectorMemoryStore implements MemoryStore {
                 filter.append(" && category == '").append(category).append("'");
             }
             filter.append(" && createdAt > ").append(afterTimestamp);
-            return vectorStore.similaritySearch(
+            return router.forSession(sessionId).similaritySearch(
                     SearchRequest.builder()
                             .query("")
                             .topK(limit)
                             .filterExpression(filter.toString())
-                            .similarityThreshold(0.0)
+                            .similarityThreshold(-1.0)
                             .build()
             );
         } catch (Exception e) {
@@ -253,13 +305,82 @@ public class VectorMemoryStore implements MemoryStore {
         }
     }
 
+    /**
+     * 删除某会话压缩边界之前的历史原文（category == chat_message 且 seq &lt;= maxSeq）。
+     * 用于压缩完成后回收旧原文，只保留边界之后的增量消息与新摘要。
+     * 序号为会话级单调递增（见 {@code LongTermMemoryService.saveChats}），
+     * 与压缩时的边界计算（{@code ContextManager.doCompact}）严格对齐。
+     *
+     * <p>实现：先按序号枚举全部原文（阈值 -1 全量召回，不按相似度漏检），
+     * 过滤出序号不高于边界的记录后按 ID 批量删除——避免依赖向量库表达式删除
+     * 对不同实现（SimpleVectorStore 空查询按余弦排位会漏掉负相关记录）的一致性。
+     *
+     * @param sessionId 会话 ID
+     * @param maxSeq    压缩边界序号，仅删除序号不大于该值的原文
+     */
+    public void deleteChatMessagesUpToSeq(String sessionId, long maxSeq) {
+        if (maxSeq <= 0) {
+            return;
+        }
+        try {
+            String filter = "sessionId == '" + sessionId
+                    + "' && category == '" + Constant.CATEGORY_CHAT
+                    + "' && seq <= " + maxSeq;
+            router.forSession(sessionId).delete(filter);
+            log.debug("历史原文已回收 sessionId={} 边界序号={}", sessionId, maxSeq);
+        } catch (Exception e) {
+            log.warn("历史原文回收失败 sessionId={} 边界序号={} 原因: {}", sessionId, maxSeq, e.getMessage());
+        }
+    }
+
+    /**
+     * 按会话级消息序号范围检索原文：只返回 seq 大于 {@code afterSeq} 的聊天记录。
+     * 用于短期记忆过期后按压缩边界恢复增量原文（与压缩时的划界逻辑一致，避免时间戳近似导致的"最近6条夹缝"）。
+     * 阈值设为 -1 全量召回——按序号/时间过滤的查询语义是"取全部"，不应被相似度排位漏掉负相关记录。
+     *
+     * @param sessionId 会话 ID
+     * @param afterSeq  起始序号（只返回序号大于该值的记录；-1 表示不过滤）
+     * @param limit     返回条数上限
+     */
+    public List<Document> searchChatBySeqAfter(String sessionId, long afterSeq, int limit) {
+        try {
+            StringBuilder filter = new StringBuilder("sessionId == '" + sessionId + "'");
+            filter.append(" && category == '").append(Constant.CATEGORY_CHAT).append("'");
+            filter.append(" && seq > ").append(afterSeq);
+            return router.forSession(sessionId).similaritySearch(
+                    SearchRequest.builder()
+                            .query("")
+                            .topK(limit)
+                            .filterExpression(filter.toString())
+                            .similarityThreshold(-1.0)
+                            .build()
+            );
+        } catch (Exception e) {
+            log.warn("序号范围检索失败 sessionId={} afterSeq={} 原因: {}", sessionId, afterSeq, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 删除会话的全部持久事实（round 替换：先删旧事实再写新事实，实现整轮去重）。
+     */
+    public void deleteSessionFacts(String sessionId) {
+        try {
+            router.forSession(sessionId).delete(
+                    "sessionId == '" + sessionId + "' && category == '" + Constant.CATEGORY_FACT + "'");
+            log.debug("会话持久事实已清空 sessionId={}", sessionId);
+        } catch (Exception e) {
+            log.warn("会话持久事实清空失败 sessionId={} 原因: {}", sessionId, e.getMessage());
+        }
+    }
+
     public void deleteSessionMemories(String sessionId) {
-        vectorStore.delete("sessionId == '" + sessionId + "'");
+        router.forSession(sessionId).delete("sessionId == '" + sessionId + "'");
         log.info("向量记忆已删除 sessionId={}", sessionId);
     }
 
     /**
-     * 批量存储文档切块（RAG 知识库，全局共享，不绑定会话）。
+     * 批量存储文档切块（RAG 知识库，全局共享，不绑定会话，路由到文档专用存储）。
      * 每个切块携带 docId 与 source 元数据，便于按文档聚合与删除。
      *
      * @param chunks 切块后的 Document 列表（含 docId/source/category 元数据）
@@ -268,11 +389,12 @@ public class VectorMemoryStore implements MemoryStore {
         if (CollectionUtils.isEmpty(chunks)) {
             return;
         }
+        VectorStore store = router.forDocument();
         try {
             if (ingestParallelism <= 1 || chunks.size() == 1) {
-                vectorStore.add(chunks);
+                store.add(chunks);
             } else {
-                parallelAdd(chunks);
+                parallelAdd(store, chunks);
             }
             for (Document chunk : chunks) {
                 Object docId = chunk.getMetadata().get(Constant.MD_DOC_ID);
@@ -293,13 +415,13 @@ public class VectorMemoryStore implements MemoryStore {
      * 实现按 {@code embed-batch-size} 分批 embedding（本地 BatchingSimpleVectorStore /
      * Milvus batchingStrategy 均适用）。等待全部组完成，任一组失败则抛出异常。
      */
-    private void parallelAdd(List<Document> chunks) {
+    private void parallelAdd(VectorStore store, List<Document> chunks) {
         int groups = Math.min(ingestParallelism, chunks.size());
         int perGroup = (chunks.size() + groups - 1) / groups;
         List<Future<?>> futures = new ArrayList<>(groups);
         for (int i = 0; i < chunks.size(); i += perGroup) {
             List<Document> group = chunks.subList(i, Math.min(chunks.size(), i + perGroup));
-            futures.add(ingestExecutor.submit(() -> vectorStore.add(group)));
+            futures.add(ingestExecutor.submit(() -> store.add(group)));
         }
         for (Future<?> future : futures) {
             try {
@@ -311,7 +433,7 @@ public class VectorMemoryStore implements MemoryStore {
     }
 
     /**
-     * 全局检索文档知识库（category == document，无 sessionId 过滤）。
+     * 全局检索文档知识库（category == document，无 sessionId 过滤，路由到文档专用存储）。
      *
      * @param query 检索词
      * @param topK  返回条数上限
@@ -319,7 +441,7 @@ public class VectorMemoryStore implements MemoryStore {
      */
     public List<Document> searchDocuments(String query, int topK) {
         try {
-            return vectorStore.similaritySearch(
+            return router.forDocument().similaritySearch(
                     SearchRequest.builder()
                             .query(query)
                             .topK(topK)
@@ -340,7 +462,7 @@ public class VectorMemoryStore implements MemoryStore {
      */
     public void deleteByDocId(String docId) {
         try {
-            vectorStore.delete("docId == '" + docId + "'");
+            router.forDocument().delete("docId == '" + docId + "'");
             Integer removed = docChunkCounts.remove(docId);
             if (removed != null && documentCount > 0) {
                 documentCount = Math.max(0, documentCount - removed);
@@ -384,7 +506,7 @@ public class VectorMemoryStore implements MemoryStore {
     private boolean probeEmptyStore() {
         for (String query : new String[]{"", "查询"}) {
             try {
-                List<Document> docs = vectorStore.similaritySearch(
+                List<Document> docs = router.forDocument().similaritySearch(
                         SearchRequest.builder()
                                 .query(query)
                                 .topK(1)
@@ -413,8 +535,13 @@ public class VectorMemoryStore implements MemoryStore {
         String id = String.valueOf(metadata.getOrDefault(Constant.MD_ID, doc.getId()));
         String sessionId = String.valueOf(metadata.getOrDefault(Constant.MD_SESSION_ID, ""));
         String category = String.valueOf(metadata.getOrDefault(Constant.MD_CATEGORY, Constant.CATEGORY_OTHER));
-        String messageType = String.valueOf(metadata.getOrDefault(Constant.MD_MESSAGE_TYPE, ""));
-        String role = String.valueOf(metadata.getOrDefault(Constant.MD_ROLE, ""));
+        String messageTypeStr = String.valueOf(metadata.getOrDefault(Constant.MD_MESSAGE_TYPE, ""));
+        MessageType messageType;
+        try {
+            messageType = MessageType.valueOf(messageTypeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            messageType = MessageType.USER;
+        }
         long createdAt = toLong(metadata.get(Constant.MD_CREATED_AT));
 
         Map<String, Object> extra = new LinkedHashMap<>();
@@ -422,7 +549,7 @@ public class VectorMemoryStore implements MemoryStore {
             String k = entry.getKey();
             if (Constant.MD_ID.equals(k) || Constant.MD_SESSION_ID.equals(k) || Constant.MD_CATEGORY.equals(k)
                     || Constant.MD_TYPE.equals(k) || Constant.MD_MESSAGE_TYPE.equals(k)
-                    || Constant.MD_ROLE.equals(k) || Constant.MD_CREATED_AT.equals(k)
+                    || Constant.MD_CREATED_AT.equals(k)
                     || Constant.MD_UPDATED_AT.equals(k) || Constant.MD_MEDIA.equals(k)
                     || Constant.MD_TOOL_CALLS.equals(k) || Constant.MD_TOOL_RESPONSES.equals(k)) {
                 continue;
@@ -435,7 +562,6 @@ public class VectorMemoryStore implements MemoryStore {
                 sessionId,
                 category,
                 messageType,
-                role,
                 doc.getText(),
                 extra,
                 fromJson(metadata.get(Constant.MD_MEDIA), new TypeReference<>() {
@@ -473,4 +599,3 @@ public class VectorMemoryStore implements MemoryStore {
         return 0;
     }
 }
-

@@ -83,6 +83,8 @@ public class AgentService {
         log.info("会话 [{}] 收到问题: {}", sessionId, userMessage);
         SessionContextHolder.set(sessionId);
         try {
+            // 等待上一轮后台压缩完成，保证读到一致上下文（超时则按旧上下文继续）
+            contextManager.awaitCompactionIfPending(sessionId);
             // 短期记忆过期/为空时，从长期记忆回注最新摘要，找回历史记忆
             contextManager.restoreContextIfEmpty(sessionId);
 
@@ -139,11 +141,14 @@ public class AgentService {
 
                 sessionManager.updateSession(sessionId, model, promptTokens, completionTokens);
 
-                longTermMemoryService.saveChats(sessionId, promptText, content, promptTokens, completionTokens);
+                // 在请求线程内分配消息序号（与短期记忆追加顺序严格一致，压缩边界据此划界），
+                // 再异步持久化到长期记忆
+                long firstSeq = sessionManager.nextMessageSeq(sessionId, 2);
+                longTermMemoryService.saveChats(sessionId, promptText, content, promptTokens, completionTokens, firstSeq, firstSeq + 1);
             }
 
-            // 当前会话信息超出上下文配置 则进行压缩
-            contextManager.compactIfNeeded(sessionId);
+            // 当前会话信息超出上下文配置则触发压缩（A+：异步执行，不阻塞本次返回）
+            contextManager.triggerCompactionIfNeeded(sessionId);
 
             log.info("会话 [{}] 回答完成", sessionId);
             return content;

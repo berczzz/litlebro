@@ -78,18 +78,27 @@ public class MessageCodec {
         }
         long now = System.currentTimeMillis();
         String id = UUID.randomUUID().toString().replace("-", "");
-        String messageType = message.getMessageType() == null ? null : message.getMessageType().getValue();
+        MessageType mt = message.getMessageType();
         String text = message.getText();
         Map<String, Object> metadata = message.getMetadata();
 
+        // category 从 metadata 读取（若有），否则默认 CATEGORY_CHAT
+        String category = Constant.CATEGORY_CHAT;
+        if (metadata != null && metadata.containsKey(Constant.MD_CATEGORY)) {
+            Object c = metadata.get(Constant.MD_CATEGORY);
+            if (c != null) {
+                category = c.toString();
+            }
+        }
+
         if (message instanceof UserMessage um) {
             return new AgentMessage(
-                    id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
+                    id, sessionId, category, mt,
                     text, metadata, toMediaData(um.getMedia(), sessionId), List.of(), List.of(), now);
         }
         if (message instanceof AssistantMessage am) {
             return new AgentMessage(
-                    id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
+                    id, sessionId, category, mt,
                     text, metadata, toMediaData(am.getMedia(), sessionId), toToolCallData(am.getToolCalls()), List.of(), now);
         }
         if (message instanceof ToolResponseMessage trm) {
@@ -100,12 +109,12 @@ public class MessageCodec {
                 }
             }
             return new AgentMessage(
-                    id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
+                    id, sessionId, category, mt,
                     text, metadata, List.of(), List.of(), responses, now);
         }
         // SystemMessage 及其他
         return new AgentMessage(
-                id, sessionId, Constant.CATEGORY_CHAT, messageType, messageType,
+                id, sessionId, category, mt,
                 text, metadata, List.of(), List.of(), List.of(), now);
     }
 
@@ -127,24 +136,28 @@ public class MessageCodec {
         if (am == null) {
             return null;
         }
-        String messageType = am.messageType() != null ? am.messageType().toUpperCase() : null;
-        if (MessageType.USER.getValue().equalsIgnoreCase(messageType)) {
-            return new UserMessage(MessageType.USER, am.text(), toMedia(am.media()), am.metadata());
+        MessageType mt = am.messageType();
+        if (mt == null) {
+            log.warn("messageType 为 null，按 SystemMessage 处理 id={}", am.id());
+            return new SystemMessage(am.text());
         }
-        if (MessageType.ASSISTANT.getValue().equalsIgnoreCase(messageType)) {
-            return new AssistantMessage(am.text(), am.metadata(), toToolCall(am.toolCalls()), toMedia(am.media()));
-        }
-        if (MessageType.TOOL.getValue().equalsIgnoreCase(messageType)) {
-            List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
-            if (am.toolResponses() != null) {
-                for (ToolResponseData tr : am.toolResponses()) {
-                    responses.add(new ToolResponseMessage.ToolResponse(tr.id(), tr.name(), tr.responseData()));
+        return switch (mt) {
+            case USER      -> new UserMessage(MessageType.USER, am.text(), toMedia(am.media()), am.metadata());
+            case ASSISTANT -> new AssistantMessage(am.text(), am.metadata(), toToolCall(am.toolCalls()), toMedia(am.media()));
+            case TOOL      -> {
+                List<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
+                if (am.toolResponses() != null) {
+                    for (ToolResponseData tr : am.toolResponses()) {
+                        responses.add(new ToolResponseMessage.ToolResponse(tr.id(), tr.name(), tr.responseData()));
+                    }
                 }
+                yield new ToolResponseMessage(responses, am.metadata());
             }
-            return new ToolResponseMessage(responses, am.metadata());
-        }
-        // 默认按 SystemMessage 处理（摘要等）
-        return new SystemMessage(am.text());
+            default -> {
+                log.warn("未知 messageType={}，按 SystemMessage 处理 id={}", mt, am.id());
+                yield new SystemMessage(am.text());
+            }
+        };
     }
 
     /**

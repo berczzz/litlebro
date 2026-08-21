@@ -29,9 +29,10 @@ public class RouterProperties {
     private List<String> strongDocumentKeywords = List.of(
             "知识库", "文档库", "之前上传的文档", "上传到知识库", "全局文档", "库里有没有", "知识库里有");
 
-    /** 强会话记忆指示词：命中即硬路由 memory */
+    /** 强会话记忆指示词：命中即硬路由 memory；同时供 search_memory 工具判定"回溯问题需补检原文" */
     private List<String> strongMemoryKeywords = List.of(
-            "之前", "刚才", "你说过", "你答过", "我们聊过", "上次", "记得吗", "上一轮", "前面说过");
+            "之前", "刚才", "你说过", "你答过", "我们聊过", "上次", "记得吗", "上一轮", "前面说过",
+            "昨天", "前天", "回顾", "继续", "上次聊", "接着聊");
 
     /** 弱/歧义检索词：命中不硬路由，走 LLM 兜底或默认 both */
     private List<String> weakKeywords = List.of(

@@ -1,5 +1,7 @@
 package com.litlebro.agent.memory.model;
 
+import org.springframework.ai.chat.messages.MessageType;
+
 import java.util.List;
 import java.util.Map;
 
@@ -10,9 +12,8 @@ import java.util.Map;
  * <ul>
  *   <li>id — 记忆唯一标识</li>
  *   <li>sessionId — 记忆归属会话，检索时按此过滤实现会话隔离</li>
- *   <li>category — 记忆分类（chat_message / session_summary / other）</li>
- *   <li>messageType — Spring AI MessageType（USER/ASSISTANT/SYSTEM/TOOL），用于精确还原</li>
- *   <li>role — 角色（user/assistant/system/tool），与 messageType 对应</li>
+ *   <li>category — 记忆分类（chat_message / session_summary / session_fact）</li>
+ *   <li>messageType — Spring AI {@link MessageType} 枚举（USER/ASSISTANT/SYSTEM/TOOL），用于精确还原</li>
  *   <li>text — 消息正文</li>
  *   <li>metadata — 可扩展元数据</li>
  *   <li>media — 多媒体内容（图片/音频等），URL 或 base64 字节</li>
@@ -28,8 +29,7 @@ public record AgentMessage(
         String id,
         String sessionId,
         String category,
-        String messageType,
-        String role,
+        MessageType messageType,
         String text,
         Map<String, Object> metadata,
         List<MediaData> media,

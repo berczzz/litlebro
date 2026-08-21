@@ -174,7 +174,7 @@ app:
 
 1. 保留最近 **6 条消息**原文
 2. 更早的旧消息 + 上一次压缩摘要 → LLM 压缩 → 新摘要（`CATEGORY_SUMMARY`）
-3. 新摘要存入长期记忆，并作为 SystemMessage 重新注入短期记忆
+3. 新摘要存入长期记忆，并作为 AssistantMessage 重新注入短期记忆
 4. 重置当前 token 占用，继续后续对话
 5. 下次压缩时传入旧摘要做增量，不重复压缩同一段历史
 
@@ -410,7 +410,6 @@ src/main/java/com/litlebro/agent/
 │       └── StreamEventSender.java      # SSE 事件推送工具
 ├── common/
 │   ├── Constant.java               # 常量统一管理（记忆类型 / 元数据键 / 上限）
-│   ├── ChatContentRole.java        # 内容角色常量
 │   └── SystemPrompt.java           # 全部提示词（对话/压缩/视觉/工具说明）
 ├── context/                        # 上下文管理
 │   ├── ContextManager.java         # 上下文组装 + 溢出压缩 + restoreContextIfEmpty

@@ -35,7 +35,8 @@ spring:
         options:
           model: ${OPEN_AI_BASE_MODEL:qwen3.8-max}
           temperature: 0.7
-          max-tokens: 131072
+          # 输出 token 上限收敛为 8192：主对话/流式/压缩共用，避免单轮输出过大挤占上下文窗口
+          max-tokens: ${APP_CHAT_MAX_TOKENS:8192}
       embedding:
         # 向量化端点可独立于对话端点（对话走一个 ENS、向量化走另一个 ENS 或 dashscope 兼容端点）
         base-url: ${OPEN_AI_EMBED_BASE_URL:${OPEN_AI_BASE_URL:}}
@@ -107,10 +108,26 @@ app:
     # 长期记忆（LTM）存储: local(默认) | milvus
     ltm:
       type: ${APP_MEMORY_LTM_TYPE:local}
+      # Milvus 会话记忆分片数：按 sessionId 哈希取模路由到 N 个 collection（{prefix}_{i}），
+      # 文档知识库走独立 collection（{prefix}_doc），与会话记忆物理隔离
+      milvus-shards: ${APP_MEMORY_LTM_MILVUS_SHARDS:16}
+      # Milvus collection 名前缀
+      milvus-collection-prefix: ${APP_MEMORY_LTM_MILVUS_PREFIX:agent_memories}
     # 上下文压缩配置
     context:
       # 模型上下文窗口大小（token），超阈值的会话历史会被压缩
       max-tokens: ${APP_MEMORY_CONTEXT_MAX_TOKENS:128000}
+      # 触发压缩的阈值（上下文占用/窗口）：默认 0.7，给 A+ 后台压缩留出缓冲
+      compact-threshold: ${APP_MEMORY_COMPACT_THRESHOLD:0.7}
+      # 压缩时保留的最近消息条数（0 = 全量压缩）
+      compact-keep-messages: ${APP_MEMORY_COMPACT_KEEP_MESSAGES:6}
+      # 压缩边界安全余量（消息序号）：保证保留的最近消息永不被回收/恢复过滤
+      compact-boundary-margin: ${APP_MEMORY_COMPACT_BOUNDARY_MARGIN:1}
+      # 下一轮请求等待上一轮压缩完成的最长时间（毫秒），超时按旧上下文继续（降级）
+      compact-wait-timeout-ms: ${APP_MEMORY_COMPACT_WAIT_TIMEOUT_MS:60000}
+      # 压缩时是否回收长期记忆中的旧原文（默认 false：保留全部原文供 search_memory 语义检索回溯；
+      # true 时删除 seq <= 压缩边界的 CATEGORY_CHAT 记录，长期记忆只保留摘要+事实+最近增量）
+      reclaim-on-compact: ${APP_MEMORY_COMPACT_RECLAIM:false}
     # 向量检索配置
     vector:
       # 语义检索相似度阈值：低于该值的片段视为不相关，默认 0.2（宽召回，配合 LLM 精排）
@@ -201,8 +218,8 @@ app:
       max-retries: ${APP_ROUTER_LLM_MAX_RETRIES:1}
     # 强文档知识库指示词：命中即硬路由 document
     strong-document-keywords: ["知识库", "文档库", "之前上传的文档", "上传到知识库", "全局文档", "库里有没有", "知识库里有"]
-    # 强会话记忆指示词：命中即硬路由 memory
-    strong-memory-keywords: ["之前", "刚才", "你说过", "你答过", "我们聊过", "上次", "记得吗", "上一轮", "前面说过"]
+    # 强会话记忆指示词：命中即硬路由 memory；同时供 search_memory 判定"回溯问题需补检原文"
+    strong-memory-keywords: ["之前", "刚才", "你说过", "你答过", "我们聊过", "上次", "记得吗", "上一轮", "前面说过", "昨天", "前天", "回顾", "继续", "上次聊", "接着聊"]
     # 弱/歧义检索词：不硬路由，走 LLM 兜底或默认 both
     weak-keywords: ["文档", "文件", "数据", "报表", "资料", "记录", "手册", "报告", "内容", "信息", "查询", "查一下", "查查", "检索", "看看", "里面的", "里写", "中提到", "提到"]
     # 附件指代词：本次带附件且问题命中时优先判定为附件问题（不拉全局检索库）

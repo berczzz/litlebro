@@ -144,6 +144,9 @@ public class AgentStreamService {
         try {
             String model = sseClient.getModel();
 
+            // 0. 等待上一轮后台压缩完成，保证读到一致上下文（超时则按旧上下文继续）
+            contextManager.awaitCompactionIfPending(sessionId);
+
             // 1. 短期记忆为空时，从长期记忆回注最新摘要与增量消息，找回历史
             contextManager.restoreContextIfEmpty(sessionId);
 
@@ -214,15 +217,16 @@ public class AgentStreamService {
                 }
             }
 
-            // 5. 落记忆（对齐阻塞式）：短期记忆助手消息 + 会话状态 + 长期记忆 + 压缩
+            // 5. 落记忆（对齐阻塞式）：短期记忆助手消息 + 会话状态 + 长期记忆
             String finalAnswer = finalContent.toString();
             if (!finalAnswer.isBlank()) {
                 chatMemory.add(sessionId, new AssistantMessage(finalAnswer));
             }
             sessionManager.updateSession(sessionId, model, totalPrompt, totalCompletion);
+            // 在请求线程内分配消息序号（与短期记忆追加顺序严格一致，压缩边界据此划界），
             // 长期记忆异步持久化，不阻塞 done 事件输出
-            longTermMemoryService.saveChats(sessionId, userContent.promptText(), finalAnswer, totalPrompt, totalCompletion);
-            contextManager.compactIfNeeded(sessionId);
+            long firstSeq = sessionManager.nextMessageSeq(sessionId, 2);
+            longTermMemoryService.saveChats(sessionId, userContent.promptText(), finalAnswer, totalPrompt, totalCompletion, firstSeq, firstSeq + 1);
 
             StreamEventSender.send(emitter, StreamEvent.TYPE_DONE,
                     Map.of("sessionId", sessionId, "model", model,
@@ -231,6 +235,9 @@ public class AgentStreamService {
                                     "totalTokens", totalPrompt + totalCompletion),
                             "toolCalls", invokedTools));
             emitter.complete();
+
+            // 先交付 done 再触发压缩（A+）：压缩在后台异步执行，不阻塞事件流
+            contextManager.triggerCompactionIfNeeded(sessionId);
         } catch (Exception e) {
             log.error("流式会话 [{}] 处理失败", sessionId, e);
             String message = (e.getMessage() == null || e.getMessage().isBlank())
