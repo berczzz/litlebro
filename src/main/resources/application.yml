@@ -43,7 +43,7 @@ spring:
         api-key: ${OPEN_AI_EMBED_API_KEY:${OPEN_AI_API_KEY:''}}
         options:
           # 向量化模型需与所选端点匹配：dashscope 用 text-embedding-v3/v4，ModelScope ENS 用其部署的 embed 模型 id
-          model: ${APP_EMBED_MODEL:text-embedding-v3}
+          model: ${APP_EMBED_MODEL:qwen3.7-text-embedding}
       retry:
         max-attempts: 3
         backoff:
