@@ -6,7 +6,12 @@ import com.litlebro.agent.attachment.external.RedisAttachmentRegistry;
 import com.litlebro.agent.attachment.local.LocalAttachmentRegistry;
 import com.litlebro.agent.common.SystemPrompt;
 import com.litlebro.agent.context.CompressionService;
+import com.litlebro.agent.embedding.CachedEmbeddingModel;
+import com.litlebro.agent.embedding.EmbeddingCache;
+import com.litlebro.agent.embedding.external.RedisEmbeddingCache;
+import com.litlebro.agent.embedding.local.LocalEmbeddingCache;
 import com.litlebro.agent.memory.LongTermMemoryService;
+import org.springframework.ai.document.MetadataMode;
 import com.litlebro.agent.memory.MessageCodec;
 import com.litlebro.agent.memory.ShardedMilvusVectorStoreRouter;
 import com.litlebro.agent.memory.SingleVectorStoreRouter;
@@ -49,6 +54,8 @@ import org.springframework.ai.chat.memory.InMemoryChatMemory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.OpenAiEmbeddingModel;
+import org.springframework.ai.openai.OpenAiEmbeddingOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.openai.api.ResponseFormat;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
@@ -111,6 +118,86 @@ public class AppConfig {
         template.setHashValueSerializer(new StringRedisSerializer());
         template.afterPropertiesSet();
         return template;
+    }
+
+    // ==================== OpenAI 模型（手动装配，替代 auto-configuration）====================
+
+    /**
+     * OpenAI API 客户端：复用主对话端点与 Key，供 chat / embedding 共用。
+     * 排除 {@code OpenAiAutoConfiguration} 后需手动创建。
+     */
+    @Bean
+    public OpenAiApi openAiApi(LlmSettings llm, RestClient.Builder restClientBuilder) {
+        OpenAiApi.Builder builder = OpenAiApi.builder()
+                .baseUrl(llm.getChatBaseUrl())
+                .restClientBuilder(restClientBuilder);
+        if (StringUtils.hasText(llm.getChatApiKey())) {
+            builder.apiKey(llm.getChatApiKey());
+        }
+        return builder.build();
+    }
+
+    /**
+     * 主对话模型：替代 auto-configuration 的 openAiChatModel。
+     */
+    @Bean
+    public OpenAiChatModel openAiChatModel(OpenAiApi openAiApi, LlmSettings llm) {
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .model(llm.getChatModel())
+                .temperature(llm.getChatTemperature())
+                .maxTokens(llm.getChatMaxTokens())
+                .build();
+        return new OpenAiChatModel(openAiApi, options);
+    }
+
+    // ==================== Embedding 缓存 ====================
+
+    /**
+     * Embedding 缓存本地内存实现：有上限 LRU，进程内共享，重启丢失。
+     * 由配置 {@code app.embedding.cache.type=local}（默认）装配。
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.embedding.cache.type", havingValue = "local", matchIfMissing = true)
+    public EmbeddingCache localEmbeddingCache(
+            @Value("${app.embedding.cache.max-entries:5000}") int maxEntries) {
+        return new LocalEmbeddingCache(maxEntries);
+    }
+
+    /**
+     * Embedding 缓存 Redis 实现：以文本哈希为 key 存入 Redis（TTL），重启不丢。
+     * 由配置 {@code app.embedding.cache.type=redis} 装配。
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.embedding.cache.type", havingValue = "redis")
+    public EmbeddingCache redisEmbeddingCache(
+            @Qualifier("appRedisTemplate") RedisTemplate<String, Object> appRedisTemplate,
+            ObjectMapper objectMapper,
+            @Value("${app.embedding.cache.ttl-hours:24}") long ttlHours) {
+        return new RedisEmbeddingCache(appRedisTemplate, objectMapper, ttlHours);
+    }
+
+    /**
+     * Embedding 模型（带缓存装饰器）：包装原始 OpenAiEmbeddingModel，
+     * 对每次 embedding 调用先查缓存、仅对未命中的文本调用底层模型。
+     * 缓存命中时跳过 HTTP 调用，节省 embedding token 与网络开销。
+     */
+    @Bean
+    public CachedEmbeddingModel cachedEmbeddingModel(OpenAiApi openAiApi, LlmSettings llm,
+                                                     EmbeddingCache cache) {
+        OpenAiEmbeddingOptions options = OpenAiEmbeddingOptions.builder()
+                .model(llm.getEmbedModel())
+                .build();
+        OpenAiEmbeddingModel delegate = new OpenAiEmbeddingModel(openAiApi, MetadataMode.NONE, options);
+        return new CachedEmbeddingModel(delegate, cache);
+    }
+
+    /**
+     * 将 CachedEmbeddingModel 注册为 Spring AI 标准 EmbeddingModel bean，
+     * 供 VectorStore / SemanticTextSplitter 等自动注入使用。
+     */
+    @Bean
+    public EmbeddingModel embeddingModel(CachedEmbeddingModel cachedEmbeddingModel) {
+        return cachedEmbeddingModel;
     }
 
     // ==================== 短期记忆（STM）====================

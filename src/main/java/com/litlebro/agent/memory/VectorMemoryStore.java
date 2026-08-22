@@ -266,7 +266,7 @@ public class VectorMemoryStore implements MemoryStore {
                             .query("")
                             .topK(limit)
                             .filterExpression(filter)
-                            .similarityThreshold(-1.0)
+                            .similarityThreshold(0.0)
                             .build()
             );
         } catch (Exception e) {
@@ -296,7 +296,7 @@ public class VectorMemoryStore implements MemoryStore {
                             .query("")
                             .topK(limit)
                             .filterExpression(filter.toString())
-                            .similarityThreshold(-1.0)
+                            .similarityThreshold(0.0)
                             .build()
             );
         } catch (Exception e) {
@@ -352,7 +352,7 @@ public class VectorMemoryStore implements MemoryStore {
                             .query("")
                             .topK(limit)
                             .filterExpression(filter.toString())
-                            .similarityThreshold(-1.0)
+                            .similarityThreshold(0.0)
                             .build()
             );
         } catch (Exception e) {

@@ -136,6 +136,15 @@ app:
       embed-batch-size: ${APP_MEMORY_VECTOR_EMBED_BATCH_SIZE:10}
     # 会话记忆检索工具二次过滤阈值：低于该分数的片段丢弃
     min-score: ${APP_MEMORY_MIN_SCORE:0.35}
+  # Embedding 缓存：相同文本的 embedding 向量缓存，避免重复调用 embedding API
+  embedding:
+    cache:
+      # 存储后端: local(默认, 本地内存 LRU, 重启丢失) | redis（Redis + TTL，重启不丢）
+      type: ${APP_EMBEDDING_CACHE_TYPE:local}
+      # 本地缓存容量上限（条数）：embedding 向量约 6KB/条(1536 维)，5000 条约 30MB
+      max-entries: ${APP_EMBEDDING_CACHE_MAX_ENTRIES:5000}
+      # Redis 缓存 TTL（小时），过期后重新请求 embedding
+      ttl-hours: ${APP_EMBEDDING_CACHE_TTL_HOURS:24}
   stream:
     # 流式接口（POST /api/agent/chat/stream）专属配置
     # 是否显式请求模型开启思考（DashScope 兼容模式 enable_thinking），开启后 SSE 会推送 reasoning 事件；

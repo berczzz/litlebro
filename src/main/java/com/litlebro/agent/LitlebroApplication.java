@@ -17,7 +17,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <li>exception — 全局异常处理</li>
  * </ul>
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = {
+        org.springframework.ai.autoconfigure.openai.OpenAiAutoConfiguration.class
+})
 public class LitlebroApplication {
 
     /**

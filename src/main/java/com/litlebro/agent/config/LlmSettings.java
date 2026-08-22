@@ -34,6 +34,17 @@ public class LlmSettings {
     @Value("${spring.ai.openai.chat.options.max-tokens:131072}")
     private int chatMaxTokens;
 
+    // ==================== Embedding（spring.ai.openai.embedding.*）====================
+
+    @Value("${spring.ai.openai.embedding.base-url:}")
+    private String embedBaseUrl;
+
+    @Value("${spring.ai.openai.embedding.api-key:}")
+    private String embedApiKey;
+
+    @Value("${spring.ai.openai.embedding.options.model:text-embedding-v3}")
+    private String embedModel;
+
     // ==================== 流式（app.stream.*）====================
 
     @Value("${app.stream.enable-thinking:false}")
@@ -80,6 +91,20 @@ public class LlmSettings {
 
     public int getChatMaxTokens() {
         return chatMaxTokens;
+    }
+
+    /** Embedding Base URL：配置了独立 Embedding 端点则用之，否则回落主对话端点。 */
+    public String resolveEmbedBaseUrl() {
+        return StringUtils.hasText(embedBaseUrl) ? embedBaseUrl : chatBaseUrl;
+    }
+
+    /** Embedding API Key：配置了独立 Embedding Key 则用之，否则回落主对话 Key。 */
+    public String resolveEmbedApiKey() {
+        return StringUtils.hasText(embedApiKey) ? embedApiKey : chatApiKey;
+    }
+
+    public String getEmbedModel() {
+        return embedModel;
     }
 
     public boolean isStreamEnableThinking() {
